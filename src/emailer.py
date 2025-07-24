@@ -14,6 +14,7 @@ def send_summary(new_trades):
     smtp_port = os.getenv("SMTP_PORT")
     smtp_user = os.getenv("SMTP_USER")
     smtp_pass = os.getenv("SMTP_PASS")
+    smtp_recipient = os.getenv("SMTP_RECIPIENT")
     
     if not all([smtp_host, smtp_port, smtp_user, smtp_pass]):
         print("Missing required SMTP environment variables")
@@ -86,7 +87,7 @@ def send_summary(new_trades):
     msg.add_alternative(html, subtype='html')
     msg["Subject"] = "Daily Congressional Trades Summary"
     msg["From"] = smtp_user
-    msg["To"] = "aiden.ballou@gmail.com"
+    msg["To"] = smtp_recipient
 
     with smtplib.SMTP(smtp_host, int(smtp_port)) as s:
         s.starttls()
