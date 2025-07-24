@@ -1,5 +1,6 @@
 import os, requests
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -66,3 +67,13 @@ def fetch_house_trades():
     except Exception as e:
         print(f"[House] Exception: {e}")
         return []
+
+def main():
+    new = run_delta()
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    # Only keep trades disclosed today
+    trades_today = [t for t in new if t.get("disclosureDate") == today]
+    if trades_today:
+        send_summary(trades_today)
+    else:
+        print("No trades disclosed today.")
