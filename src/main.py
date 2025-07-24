@@ -3,7 +3,6 @@ from emailer import send_summary
 from dotenv import load_dotenv
 import os
 from datetime import datetime
-from datetime import timezone
 from zoneinfo import ZoneInfo
 
 # Load environment variables
