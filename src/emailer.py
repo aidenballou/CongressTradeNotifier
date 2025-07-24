@@ -86,7 +86,7 @@ def send_summary(new_trades):
     msg.add_alternative(html, subtype='html')
     msg["Subject"] = "Daily Congressional Trades Summary"
     msg["From"] = smtp_user
-    msg["To"] = smtp_user
+    msg["To"] = "aiden.ballou@gmail.com"
 
     with smtplib.SMTP(smtp_host, int(smtp_port)) as s:
         s.starttls()
