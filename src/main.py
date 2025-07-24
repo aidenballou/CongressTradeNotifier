@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime
 from datetime import timezone
+from zoneinfo import ZoneInfo
 
 # Load environment variables
 load_dotenv()
@@ -14,7 +15,7 @@ def main():
     print(f"FMP_API_KEY: {os.getenv('FMP_API_KEY')}")
     
     new = run_delta()
-    today = datetime.now(timezone.etc).strftime("%Y-%m-%d")
+    today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     trades_today = [t for t in new if t.get("disclosureDate") == today]
     print(f"Found {len(trades_today)} trades disclosed today ({today})")
     
