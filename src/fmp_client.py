@@ -29,6 +29,9 @@ def fetch_senate_trades():
             print(f"[Senate] List length: {len(data)}")
             if data:
                 print(f"[Senate] First item: {data[0]}")
+            # Add source field to each trade
+            for trade in data:
+                trade['source'] = 'senate'
         else:
             print(f"[Senate] Not a list, keys: {data.keys() if isinstance(data, dict) else 'N/A'}")
         
@@ -59,6 +62,9 @@ def fetch_house_trades():
             print(f"[House] List length: {len(data)}")
             if data:
                 print(f"[House] First item: {data[0]}")
+            # Add source field to each trade
+            for trade in data:
+                trade['source'] = 'house'
         else:
             print(f"[House] Not a list, keys: {data.keys() if isinstance(data, dict) else 'N/A'}")
         
