@@ -1,5 +1,6 @@
 requests
 python-dotenv
 tweepy
+matplotlib
 pytest
 pytest-mock

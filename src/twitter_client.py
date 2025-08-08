@@ -1,9 +1,18 @@
 import os
 import time
 import logging
-from typing import Dict, Optional
+import tempfile
+from typing import Dict, Optional, List, Tuple
+import requests
 import tweepy
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
+
+# Lazy import for plotting to avoid heavy import when disabled
+try:
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:  # pragma: no cover - plot is optional
+    plt = None
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +35,7 @@ class TwitterClient:
         if not all([self.api_key, self.api_secret, self.access_token, self.access_secret]):
             raise ValueError("Missing required Twitter API credentials in environment variables")
         
-        # Initialize Tweepy client
+        # Initialize Tweepy v2 client (for creating tweets)
         self.client = tweepy.Client(
             consumer_key=self.api_key,
             consumer_secret=self.api_secret,
@@ -34,6 +43,19 @@ class TwitterClient:
             access_token_secret=self.access_secret,
             wait_on_rate_limit=True
         )
+
+        # Initialize Tweepy v1.1 API (for media uploads)
+        auth = tweepy.OAuth1UserHandler(
+            self.api_key,
+            self.api_secret,
+            self.access_token,
+            self.access_secret,
+        )
+        self.api_v1 = tweepy.API(auth, wait_on_rate_limit=True)
+
+        # Feature flags
+        self.attach_chart = os.getenv("TWITTER_ATTACH_CHART", "true").lower() in {"1", "true", "yes"}
+        self.use_engaging_style = os.getenv("TWITTER_STYLE", "engaging").lower() == "engaging"
     
     def _format_trade_tweet(self, trade: Dict) -> str:
         """
@@ -47,7 +69,8 @@ class TwitterClient:
         """
         # Extract trade details
         member_name = f"{trade.get('firstName', '')} {trade.get('lastName', '')}".strip()
-        action = trade.get('type', '').upper()
+        raw_action = (trade.get('type') or '').strip()
+        action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
         ticker = trade.get('symbol', '')
         amount_str = trade.get('amount', '')
         date = trade.get('transactionDate', '')
@@ -63,7 +86,7 @@ class TwitterClient:
         insight = self._generate_insight(trade)
         
         # Select appropriate emoji
-        emoji = "📈" if action == "BUY" else "📉" if action == "SELL" else "📊"
+        emoji = "🚀" if action == "BUY" else "⚠️" if action == "SELL" else "📊"
         
         # Build tweet with character limit consideration
         base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} on {date} ({amount_display}). {insight} #CongressTrades"
@@ -85,6 +108,68 @@ class TwitterClient:
                 base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} on {date} ({amount_display}). #CongressTrades"
         
         return base_tweet
+
+    def _format_trade_tweet_engaging(self, trade: Dict) -> str:
+        """More engaging style tweet with a performance line and newlines, ≤ 280 chars."""
+        member_name = f"{trade.get('firstName', '')} {trade.get('lastName', '')}".strip()
+        raw_action = (trade.get('type') or '').strip()
+        action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
+        ticker = (trade.get('symbol') or '').upper()
+        amount_str = trade.get('amount', '')
+        trans_date = trade.get('transactionDate', '')
+        asset_desc = trade.get('assetDescription', '')
+        district = (trade.get('district') or '').strip()
+        title = "Sen." if "senate" in (trade.get('source') or '').lower() else "Rep."
+
+        amount_display = self._format_amount(amount_str)
+        sector_tag = self._get_sector_hashtag(asset_desc)
+
+        # Tone and emojis
+        lead_emoji = "🟢" if action == "BUY" else ("🔴" if action == "SELL" else "🟡")
+        verb = "just disclosed"  # adds recency/urgency
+
+        # Optional locality info
+        geo = f" ({district})" if district else ""
+
+        # Insight + performance snippet
+        insight = self._generate_insight(trade)
+        perf_snippet = self._build_performance_snippet(ticker, action, trans_date)
+
+        # Three-line layout
+        line1 = f"{lead_emoji} {title} {member_name}{geo} {verb} a {action} in ${ticker} on {trans_date} (≈{amount_display})."
+        line2 = perf_snippet  # may be empty
+        line3_base = f"{insight} #CongressTrades"
+        line3 = f"{line3_base} {sector_tag}" if sector_tag else line3_base
+
+        # Assemble with newlines and enforce 280 chars by trimming extras first
+        parts = [p for p in [line1, line2, line3] if p]
+        candidate = "\n\n".join(parts)
+        if len(candidate) <= 280:
+            return candidate
+
+        # Drop sector hashtag if needed
+        if sector_tag and (len(candidate) - (len(sector_tag) + 1)) <= 280:
+            return candidate.replace(f" {sector_tag}", "")
+
+        # Truncate insight if still long
+        if insight and len(candidate) > 280:
+            keep = 280 - (len(line1) + 2 + len(line2)) - len(" #CongressTrades")
+            if keep > 40:
+                truncated = (insight[: keep - 1] + "…") if len(insight) > keep else insight
+                candidate = "\n\n".join([s for s in [line1, line2, f"{truncated} #CongressTrades"] if s])
+                if len(candidate) <= 280:
+                    return candidate
+
+        # If still too long, drop performance line
+        candidate = "\n\n".join([line1, line3_base])
+        if len(candidate) + (len(sector_tag) + 1 if sector_tag else 0) <= 280:
+            return candidate + (f" {sector_tag}" if sector_tag else "")
+
+        # Compact fallback
+        compact = f"{lead_emoji} {title} {member_name}{geo} {verb} {action} ${ticker} on {trans_date} (≈{amount_display}). #CongressTrades"
+        if sector_tag and len(compact) + len(sector_tag) + 1 <= 280:
+            compact += f" {sector_tag}"
+        return compact[:280]
     
     def _format_amount(self, amount_str: str) -> str:
         """Format amount string for display."""
@@ -159,11 +244,30 @@ class TwitterClient:
                   firstName, lastName, type, symbol, amount, transactionDate, etc.
         """
         try:
-            tweet_text = self._format_trade_tweet(trade)
+            # Choose style
+            tweet_text = self._format_trade_tweet_engaging(trade) if self.use_engaging_style else self._format_trade_tweet(trade)
             logger.info(f"Posting tweet: {tweet_text}")
             
-            # Post tweet with retry logic
-            self._post_with_retry(tweet_text)
+            media_ids: Optional[List[str]] = None
+
+            # Optionally attach a small chart image for the symbol
+            symbol = (trade.get('symbol') or '').upper().strip()
+            if self.attach_chart and symbol and plt is not None:
+                try:
+                    image_path = self._build_chart_for_symbol(symbol, trade.get('transactionDate'))
+                    if image_path:
+                        media_id = self.api_v1.media_upload(filename=image_path).media_id_string
+                        media_ids = [media_id]
+                        try:
+                            os.remove(image_path)
+                        except Exception:
+                            pass
+                except Exception as chart_err:
+                    logger.warning(f"Chart generation/upload failed for {symbol}: {chart_err}")
+                    media_ids = None
+
+            # Post tweet with retry logic (optionally with media)
+            self._post_with_retry(tweet_text, media_ids=media_ids)
             
             logger.info("Tweet posted successfully")
             
@@ -171,7 +275,7 @@ class TwitterClient:
             logger.error(f"Failed to post tweet for trade {trade.get('symbol', 'Unknown')}: {str(e)}")
             raise
     
-    def _post_with_retry(self, tweet_text: str, max_retries: int = 3) -> None:
+    def _post_with_retry(self, tweet_text: str, max_retries: int = 3, media_ids: Optional[List[str]] = None) -> None:
         """
         Post tweet with exponential backoff retry for rate limiting.
         
@@ -181,7 +285,10 @@ class TwitterClient:
         """
         for attempt in range(max_retries + 1):
             try:
-                response = self.client.create_tweet(text=tweet_text)
+                if media_ids:
+                    response = self.client.create_tweet(text=tweet_text, media={"media_ids": media_ids})
+                else:
+                    response = self.client.create_tweet(text=tweet_text)
                 logger.info(f"Tweet posted with ID: {response.data['id']}")
                 return
                 
@@ -211,6 +318,157 @@ class TwitterClient:
                 else:
                     logger.error(f"Max retries exceeded. Final error: {str(e)}")
                     raise
+
+    # -------------------------
+    # Chart & Price utilities
+    # -------------------------
+    def _fetch_historical_prices(self, symbol: str, days: int = 60) -> List[Tuple[datetime, float]]:
+        """Fetch recent daily close prices from FMP. Returns list of (date, close)."""
+        api_key = os.getenv("FMP_API_KEY")
+        if not api_key:
+            return []
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?timeseries={days}&apikey={api_key}"
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                return []
+            data = resp.json() or {}
+            hist = data.get("historical", [])
+            series: List[Tuple[datetime, float]] = []
+            for item in hist:
+                try:
+                    d = datetime.strptime(item["date"], "%Y-%m-%d")
+                    c = float(item["close"])
+                    series.append((d, c))
+                except Exception:
+                    continue
+            series.sort(key=lambda x: x[0])
+            return series
+        except Exception:
+            return []
+
+    def _build_chart_for_symbol(self, symbol: str, transaction_date: Optional[str] = None) -> Optional[str]:
+        """Generate a simple PNG line chart for the symbol and optionally mark the transaction date."""
+        if plt is None:
+            return None
+        series = self._fetch_historical_prices(symbol, days=90)
+        if not series:
+            return None
+        dates = [d for d, _ in series]
+        closes = [c for _, c in series]
+
+        # Create plot
+        fig, ax = plt.subplots(figsize=(6, 3), dpi=200)
+        ax.plot(dates, closes, color="#1DA1F2", linewidth=2)
+        ax.set_title(f"${symbol} - Last 90 Days", fontsize=10)
+        ax.set_xlabel("")
+        ax.set_ylabel("Price ($)", fontsize=8)
+        ax.grid(True, linestyle=":", alpha=0.3)
+        for spine in ["top", "right"]:
+            ax.spines[spine].set_visible(False)
+        # Mark transaction date if within range
+        try:
+            if transaction_date:
+                tx = datetime.strptime(transaction_date, "%Y-%m-%d")
+                if dates[0] <= tx <= dates[-1]:
+                    ax.axvline(tx, color="#FF5733", linestyle="--", linewidth=1, alpha=0.85)
+                    ax.text(tx, max(closes), " Tx", color="#FF5733", fontsize=8, ha="left", va="top")
+        except Exception:
+            pass
+        fig.tight_layout()
+
+        # Save to temp file
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{symbol}.png")
+        image_path = tmp.name
+        tmp.close()
+        fig.savefig(image_path, bbox_inches="tight")
+        plt.close(fig)
+        return image_path
+
+    # -------------------------
+    # Performance snippet helpers
+    # -------------------------
+    def _build_performance_snippet(self, symbol: str, action: str, transaction_date: Optional[str]) -> str:
+        """Return a short line like: "$XYZ is up 3.2% since the purchase." if data available."""
+        try:
+            if not symbol or not transaction_date:
+                return ""
+            entry_price, _ = self._get_close_on_or_after(symbol, transaction_date)
+            latest_price, _ = self._get_latest_close(symbol)
+            if entry_price is None or latest_price is None or entry_price <= 0:
+                return ""
+            change_pct = (latest_price - entry_price) / entry_price * 100.0
+            direction = "up" if change_pct >= 0 else "down"
+            abs_pct = abs(change_pct)
+            suffix = "purchase" if action == "BUY" else ("sale" if action == "SELL" else "transaction")
+            return f"${symbol} is {direction} {abs_pct:.1f}% since the {suffix}."
+        except Exception:
+            return ""
+
+    def _get_close_on_or_after(self, symbol: str, date_str: str) -> Tuple[Optional[float], Optional[str]]:
+        """Find close on the given date or next trading day within a small window."""
+        api_key = os.getenv("FMP_API_KEY")
+        if not api_key:
+            return None, None
+        try:
+            target = datetime.strptime(date_str, "%Y-%m-%d")
+        except Exception:
+            return None, None
+        start = (target - timedelta(days=3)).strftime("%Y-%m-%d")
+        end = (target + timedelta(days=10)).strftime("%Y-%m-%d")
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?from={start}&to={end}&apikey={api_key}"
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                return None, None
+            data = resp.json() or {}
+            hist = data.get("historical", [])
+            chosen = None
+            for item in sorted(hist, key=lambda x: x.get("date", "")):
+                try:
+                    d = datetime.strptime(item["date"], "%Y-%m-%d")
+                except Exception:
+                    continue
+                if d >= target:
+                    chosen = item
+                    break
+            if not chosen and hist:
+                chosen = sorted(hist, key=lambda x: x.get("date", ""))[0]
+            if chosen:
+                return float(chosen.get("close")), chosen.get("date")
+            return None, None
+        except Exception:
+            return None, None
+
+    def _get_latest_close(self, symbol: str) -> Tuple[Optional[float], Optional[str]]:
+        """Get most recent close using quote endpoint fallback to 1-day historical."""
+        api_key = os.getenv("FMP_API_KEY")
+        if not api_key:
+            return None, None
+        # Try quote endpoint first
+        url_quote = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={api_key}"
+        try:
+            r = requests.get(url_quote, timeout=10)
+            if r.status_code == 200:
+                arr = r.json() or []
+                if isinstance(arr, list) and arr:
+                    price = arr[0].get("price") or arr[0].get("previousClose")
+                    if price:
+                        return float(price), datetime.utcnow().strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        # Fallback to 1-day historical
+        url_hist = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?timeseries=1&apikey={api_key}"
+        try:
+            r2 = requests.get(url_hist, timeout=10)
+            if r2.status_code == 200:
+                d = r2.json() or {}
+                hist = d.get("historical", [])
+                if hist:
+                    return float(hist[0]["close"]), hist[0]["date"]
+        except Exception:
+            pass
+        return None, None
 
 
 def post_trades_to_twitter(trades: list) -> None:
