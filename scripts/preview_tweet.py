@@ -20,7 +20,7 @@ Usage examples:
 import os
 import sys
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from dotenv import load_dotenv
 
 # Ensure we can import from src/
@@ -69,10 +69,10 @@ def get_recent_trade_from_db():
 
 
 def get_sample_trade():
-    ten_days_ago = (datetime.utcnow() - timedelta(days=10)).strftime("%Y-%m-%d")
+    ten_days_ago = (datetime.now(UTC) - timedelta(days=10)).strftime("%Y-%m-%d")
     return {
         "symbol": "AAPL",
-        "disclosureDate": datetime.utcnow().strftime("%Y-%m-%d"),
+        "disclosureDate": datetime.now(UTC).strftime("%Y-%m-%d"),
         "transactionDate": ten_days_ago,
         "firstName": "Jane",
         "lastName": "Doe",
