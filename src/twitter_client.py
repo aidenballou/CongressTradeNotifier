@@ -271,7 +271,7 @@ class TwitterClient:
             tweet_text = self._format_trade_tweet_engaging(trade) if self.use_engaging_style else self._format_trade_tweet(trade)
             logger.info(f"Posting tweet: {tweet_text}")
             
-            media_ids: Optional[List[str]] = None
+            media_ids: Optional[List[int]] = None
 
             # Optionally attach a small chart image for the symbol
             symbol = (trade.get('symbol') or '').upper().strip()
@@ -279,7 +279,7 @@ class TwitterClient:
                 try:
                     image_path = self._build_chart_for_symbol(symbol, trade.get('transactionDate'))
                     if image_path:
-                        media_id = self.api_v1.media_upload(filename=image_path).media_id_string
+                        media_id = self.api_v1.media_upload(filename=image_path).media_id
                         media_ids = [media_id]
                         try:
                             os.remove(image_path)
@@ -298,7 +298,7 @@ class TwitterClient:
             logger.error(f"Failed to post tweet for trade {trade.get('symbol', 'Unknown')}: {str(e)}")
             raise
     
-    def _post_with_retry(self, tweet_text: str, max_retries: int = 3, media_ids: Optional[List[str]] = None) -> None:
+    def _post_with_retry(self, tweet_text: str, max_retries: int = 3, media_ids: Optional[List[int]] = None) -> None:
         """
         Post tweet with exponential backoff retry for rate limiting.
         
@@ -309,7 +309,12 @@ class TwitterClient:
         for attempt in range(max_retries + 1):
             try:
                 if media_ids:
-                    response = self.client.create_tweet(text=tweet_text, media={"media_ids": media_ids})
+                    # Primary path: v2 param 'media' expects dict with 'media_ids'
+                    try:
+                        response = self.client.create_tweet(text=tweet_text, media={"media_ids": media_ids})
+                    except TypeError:
+                        # Fallback for alternative client signatures
+                        response = self.client.create_tweet(text=tweet_text, media_ids=media_ids)
                 else:
                     response = self.client.create_tweet(text=tweet_text)
                 logger.info(f"Tweet posted with ID: {response.data['id']}")
@@ -359,29 +364,157 @@ class TwitterClient:
             ema_values.append(ema_prev)
         return ema_values
     def _fetch_historical_prices(self, symbol: str, days: int = 60) -> List[Tuple[datetime, float]]:
-        """Fetch recent daily close prices from FMP. Returns list of (date, close)."""
+        """Fetch recent prices from FMP with robust fallbacks. Returns list of (date, close)."""
         api_key = os.getenv("FMP_API_KEY")
         if not api_key:
+            logger.warning("FMP_API_KEY not set; cannot build chart")
             return []
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?timeseries={days}&apikey={api_key}"
+
+        # Primary: daily closes for last N days
+        url_daily = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?timeseries={days}&apikey={api_key}"
         try:
-            resp = requests.get(url, timeout=10)
-            if resp.status_code != 200:
-                return []
-            data = resp.json() or {}
-            hist = data.get("historical", [])
-            series: List[Tuple[datetime, float]] = []
-            for item in hist:
-                try:
-                    d = datetime.strptime(item["date"], "%Y-%m-%d")
-                    c = float(item["close"])
-                    series.append((d, c))
-                except Exception:
-                    continue
-            series.sort(key=lambda x: x[0])
-            return series
-        except Exception:
-            return []
+            resp = requests.get(url_daily, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json() or {}
+                hist = data.get("historical", [])
+                series: List[Tuple[datetime, float]] = []
+                for item in hist:
+                    try:
+                        d = datetime.strptime(item["date"], "%Y-%m-%d")
+                        c = float(item["close"])
+                        series.append((d, c))
+                    except Exception:
+                        continue
+                series.sort(key=lambda x: x[0])
+                if series:
+                    return series
+            else:
+                logger.warning(f"FMP daily HTTP {resp.status_code} for {symbol}")
+        except Exception as e:
+            logger.warning(f"FMP daily exception for {symbol}: {e}")
+
+        # Fallback 1: 4-hour bars over approx last 60 days
+        try:
+            end = datetime.utcnow()
+            start = end - timedelta(days=max(days, 60))
+            url_4h = (
+                f"https://financialmodelingprep.com/api/v3/historical-chart/4hour/{symbol}?from={start.strftime('%Y-%m-%d')}&to={end.strftime('%Y-%m-%d')}&apikey={api_key}"
+            )
+            r2 = requests.get(url_4h, timeout=10)
+            if r2.status_code == 200:
+                arr = r2.json() or []
+                step = max(len(arr) // 90, 1)  # downsample to ~90 points
+                series_4h: List[Tuple[datetime, float]] = []
+                for item in arr[::step]:
+                    try:
+                        d = datetime.strptime(item["date"], "%Y-%m-%d %H:%M:%S")
+                        c = float(item["close"])
+                        series_4h.append((d, c))
+                    except Exception:
+                        continue
+                series_4h.sort(key=lambda x: x[0])
+                if series_4h:
+                    return series_4h
+            else:
+                logger.warning(f"FMP 4h HTTP {r2.status_code} for {symbol}")
+        except Exception as e:
+            logger.warning(f"FMP 4h exception for {symbol}: {e}")
+
+        # Fallback 2: 1-hour bars over approx last 30 days
+        try:
+            end = datetime.utcnow()
+            start = end - timedelta(days=30)
+            url_1h = (
+                f"https://financialmodelingprep.com/api/v3/historical-chart/1hour/{symbol}?from={start.strftime('%Y-%m-%d')}&to={end.strftime('%Y-%m-%d')}&apikey={api_key}"
+            )
+            r3 = requests.get(url_1h, timeout=10)
+            if r3.status_code == 200:
+                arr = r3.json() or []
+                step = max(len(arr) // 90, 1)
+                series_1h: List[Tuple[datetime, float]] = []
+                for item in arr[::step]:
+                    try:
+                        d = datetime.strptime(item["date"], "%Y-%m-%d %H:%M:%S")
+                        c = float(item["close"])
+                        series_1h.append((d, c))
+                    except Exception:
+                        continue
+                series_1h.sort(key=lambda x: x[0])
+                if series_1h:
+                    return series_1h
+            else:
+                logger.warning(f"FMP 1h HTTP {r3.status_code} for {symbol}")
+        except Exception as e:
+            logger.warning(f"FMP 1h exception for {symbol}: {e}")
+
+        # Fallback 3: yfinance (no API key) daily data
+        try:
+            import yfinance as yf  # type: ignore
+            import pandas as pd  # type: ignore
+            period = "3mo" if days >= 60 else "1mo"
+            # Force single-level columns if possible
+            df = yf.download(
+                symbol,
+                period=period,
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+                group_by="column",
+            )
+            series_yf: List[Tuple[datetime, float]] = []
+            if not df.empty:
+                close_series = None
+
+                # Case 1: Single-level columns
+                if getattr(df.columns, "nlevels", 1) == 1:
+                    if "Close" in df.columns:
+                        close_series = df["Close"]
+                    elif "Adj Close" in df.columns:
+                        close_series = df["Adj Close"]
+
+                # Case 2: MultiIndex columns. Try to locate any level that equals 'Close'/'Adj Close'
+                if close_series is None and getattr(df.columns, "nlevels", 1) > 1:
+                    # Try xs on level 0 and level 1 (common patterns)
+                    for level in range(df.columns.nlevels):
+                        for key in ("Close", "Adj Close"):
+                            try:
+                                sub = df.xs(key, axis=1, level=level)
+                                if isinstance(sub, pd.Series):
+                                    close_series = sub
+                                    break
+                                elif isinstance(sub, pd.DataFrame) and not sub.empty:
+                                    close_series = sub.iloc[:, 0]
+                                    break
+                            except Exception:
+                                continue
+                        if close_series is not None:
+                            break
+                    # As a final attempt, scan raw tuples
+                    if close_series is None:
+                        for col in df.columns:
+                            if isinstance(col, tuple) and any(part in ("Close", "Adj Close") for part in col):
+                                close_series = df[col]
+                                break
+
+                if close_series is None:
+                    logger.warning(f"yfinance returned data for {symbol} but could not locate Close column; cols={list(df.columns)[:6]}")
+                else:
+                    for idx, val in close_series.items():
+                        try:
+                            d = getattr(idx, "to_pydatetime", lambda: idx)().replace(tzinfo=None)  # robust timestamp handling
+                            if pd.notna(val):
+                                series_yf.append((d, float(val)))
+                        except Exception:
+                            continue
+
+            series_yf.sort(key=lambda x: x[0])
+            if series_yf:
+                logger.info(f"Using yfinance fallback for {symbol} ({len(series_yf)} pts)")
+                return series_yf
+        except Exception as e:
+            logger.warning(f"yfinance fallback exception for {symbol}: {e}")
+
+        return []
 
     def _build_chart_for_symbol(self, symbol: str, transaction_date: Optional[str] = None) -> Optional[str]:
         """Generate a professional, clean PNG line chart and optionally mark the transaction date."""
@@ -389,6 +522,7 @@ class TwitterClient:
             return None
         series = self._fetch_historical_prices(symbol, days=90)
         if not series:
+            logger.warning(f"No price data available for {symbol}; chart generation skipped")
             return None
         dates = [d for d, _ in series]
         closes = [c for _, c in series]

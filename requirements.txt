@@ -4,3 +4,4 @@ tweepy
 matplotlib
 pytest
 pytest-mock
+yfinance
