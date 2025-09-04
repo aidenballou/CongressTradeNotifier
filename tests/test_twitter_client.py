@@ -56,7 +56,7 @@ class TestTwitterClient:
         
         tweet = client._format_trade_tweet(trade)
         
-        assert '📈' in tweet
+        assert '🚀' in tweet
         assert 'Sen. John Doe' in tweet
         assert 'BUY' in tweet
         assert '$AAPL' in tweet
@@ -89,7 +89,7 @@ class TestTwitterClient:
         
         tweet = client._format_trade_tweet(trade)
         
-        assert '📉' in tweet
+        assert '⚠️' in tweet
         assert 'Rep. Jane Smith' in tweet
         assert 'SELL' in tweet
         assert '$TSLA' in tweet
@@ -197,6 +197,51 @@ class TestTwitterClient:
         
         # Verify tweet was posted
         mock_client_instance.create_tweet.assert_called_once()
+
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_format_multi_trade_tweet(self, mock_client):
+        """Test formatting of aggregated multi-trade tweet."""
+        client = TwitterClient()
+
+        bundle = {
+            'firstName': 'Marjorie',
+            'lastName': 'Greene',
+            'disclosureDate': '2025-09-01',
+            'trades': [
+                {'type': 'purchase', 'symbol': 'EXC', 'amount': '$15,001 - $50,000'},
+                {'type': 'purchase', 'symbol': 'SO', 'amount': '$1,001 - $15,000'},
+            ]
+        }
+
+        tweet = client._format_multi_trade_tweet(bundle)
+        assert 'multiple trades' in tweet
+        assert '$EXC' in tweet and '$SO' in tweet
+        assert '#CongressTrades' in tweet
+        assert len(tweet) <= 280
+
+    @patch('src.twitter_client.TwitterClient')
+    def test_post_trades_to_twitter_aggregates(self, mock_client_cls):
+        """Ensure trades are aggregated by member before tweeting."""
+        mock_instance = Mock()
+        mock_client_cls.return_value = mock_instance
+
+        trades = [
+            {'firstName': 'Marjorie', 'lastName': 'Greene', 'disclosureDate': '2025-09-01', 'type': 'purchase', 'symbol': 'EXC', 'amount': '$1 - $2'},
+            {'firstName': 'Marjorie', 'lastName': 'Greene', 'disclosureDate': '2025-09-01', 'type': 'purchase', 'symbol': 'SO', 'amount': '$3 - $4'},
+            {'firstName': 'Other', 'lastName': 'Member', 'disclosureDate': '2025-09-01', 'type': 'purchase', 'symbol': 'FDX', 'amount': '$5 - $6'},
+        ]
+
+        post_trades_to_twitter(trades)
+
+        calls = mock_instance.post_trade_tweet.call_args_list
+        assert len(calls) == 2
+        assert any('trades' in call[0][0] and len(call[0][0]['trades']) == 2 for call in calls)
     
     @patch.dict('os.environ', {
         'TWITTER_API_KEY': 'test_key',
