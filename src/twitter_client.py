@@ -244,20 +244,29 @@ class TwitterClient:
                 continue
             candidates.append(v)
 
-        # Engagement heuristic scoring
+        # Engagement heuristic scoring (tuned to reduce monotony)
         def score(text: str) -> int:
             s = 0
+            # Performance and relative
             if perf_has_pct and ('Since then:' in text or 'Since trade' in text):
-                s += 3
+                s += 4
             if spx_change and 'S&P' in text:
                 s += 2
-            if lag_days and lag_days >= 10 and ('Filed' in text or 'Lag:' in text):
-                s += 2
+            # Lag: lighter weight unless very large
+            if lag_days and ('Filed' in text or 'Lag:' in text):
+                if lag_days >= 20:
+                    s += 2
+                elif lag_days >= 10:
+                    s += 1
+            # Patterns and options
             if repeat_ticker_12m and isinstance(repeat_ticker_12m, (int, float)) and repeat_ticker_12m >= 2 and ('12 months' in text):
                 s += 2
             if 'OPTION' in text or 'Option' in text:
                 s += 2
-            # Prefer those that include a newline (two-line format) a bit
+            # Sector angle small nudge
+            if sector_tag and ('(' + sector_tag + ')' in text):
+                s += 1
+            # Small bonus for two-line formats
             if '\n' in text:
                 s += 1
             # Penalize missing ticker
@@ -265,11 +274,23 @@ class TwitterClient:
                 s -= 2
             return s
 
-        # Choose best by score; tie-break using a stable hash to add variation
+        # Choose using score with deterministic rotation among top candidates to add variety
         if not candidates:
             candidates = [t_clean_news()]
-        scored = sorted(candidates, key=lambda x: (-score(x), hash((ticker, trans_date, x)) % 5))
-        chosen = scored[0]
+        scored_list = [(score(c), c) for c in candidates]
+        scored_list.sort(key=lambda t: (-t[0], len(t[1])))
+
+        # Rotation: if top few are close, rotate based on a stable hash salt to vary structure
+        salt = (ticker or '') + '|' + (disclosure_date or trans_date or '') + '|' + member_name + '|' + action
+        top_scores = [s for s, _ in scored_list]
+        chosen = scored_list[0][1]
+        if len(scored_list) > 1:
+            # Consider top-3 if their scores are within 2 points of the best
+            cutoff = top_scores[0] - 2
+            top_candidates = [c for s, c in scored_list if s >= cutoff]
+            if top_candidates:
+                idx = abs(hash(salt)) % len(top_candidates)
+                chosen = top_candidates[idx]
 
         # Hashtags: up to 2; prefer none when tight
         hashtag_pool = ["#CongressTrades", "#InsiderActivity", "#Markets"]
