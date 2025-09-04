@@ -133,66 +133,184 @@ class TwitterClient:
         return base_tweet
 
     def _format_trade_tweet_engaging(self, trade: Dict) -> str:
-        """More engaging style tweet with a performance line and newlines, ≤ 280 chars."""
-        member_name = f"{trade.get('firstName', '')} {trade.get('lastName', '')}".strip()
+        """Compose concise, varied, human-sounding posts while respecting 280 chars and style rules."""
+        # Core fields
+        first = (trade.get('firstName') or '').strip()
+        last = (trade.get('lastName') or '').strip()
+        member_name = f"{first} {last}".strip()
         raw_action = (trade.get('type') or '').strip()
         action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
-        ticker = (trade.get('symbol') or '').upper()
+        ticker = (trade.get('symbol') or '').upper().strip()
         amount_str = trade.get('amount', '')
-        trans_date = trade.get('transactionDate', '')
+        trans_date = (trade.get('transactionDate') or '').strip()
+        disclosure_date = (trade.get('disclosureDate') or '').strip()
         asset_desc = trade.get('assetDescription', '')
         district = (trade.get('district') or '').strip()
         title = "Sen." if "senate" in (trade.get('source') or '').lower() else "Rep."
 
-        amount_display = self._format_amount(amount_str)
+        # Formatting helpers
+        def fmt_district(code: str) -> str:
+            if not code:
+                return ""
+            # e.g., FL25 -> FL-25, GA10 -> GA-10
+            letters = ''.join([c for c in code if c.isalpha()])
+            digits = ''.join([c for c in code if c.isdigit()])
+            return f"{letters}-{digits}" if letters and digits else code
+
+        def collapse_spaces(s: str) -> str:
+            return ' '.join(s.replace('\n', '\n ').split())
+
+        # Compute derived
+        amount_display = self._format_amount(amount_str) or "undisclosed"
         sector_tag = self._get_sector_hashtag(asset_desc)
+        emoji = "🟢" if action == "BUY" else ("🔴" if action == "SELL" else ("🟣" if 'option' in asset_desc.lower() else "🔵"))
+        who = f"{title} {member_name}"
+        geo = f" ({fmt_district(district)})" if district else ""
+        ticker_or_undisclosed = f"${ticker}" if ticker else "an undisclosed ticker"
 
-        # Tone and emojis
-        lead_emoji = "🟢" if action == "BUY" else ("🔴" if action == "SELL" else "🟡")
-        verb = "just disclosed"  # adds recency/urgency
+        # Insights data (if present)
+        perf = self._build_performance_snippet(ticker, action, trans_date) if ticker else ""
+        # Extract numeric pct only for scoring convenience
+        perf_has_pct = bool(perf)
 
-        # Optional locality info
-        geo = f" ({district})" if district else ""
+        # Lag days if both dates present
+        lag_days = None
+        try:
+            if trans_date and disclosure_date:
+                dt_t = datetime.strptime(trans_date, "%Y-%m-%d")
+                dt_d = datetime.strptime(disclosure_date, "%Y-%m-%d")
+                lag_days = max(0, (dt_d - dt_t).days)
+        except Exception:
+            lag_days = None
 
-        # Insight + performance snippet
-        insight = self._generate_insight(trade)
-        perf_snippet = self._build_performance_snippet(ticker, action, trans_date)
+        repeat_ticker_12m = trade.get('member_prior_trades_same_ticker_365d')
+        member_trade_count_30d = trade.get('member_trade_count_30d')
+        spx_change = trade.get('sp500_change_same_window')
 
-        # Three-line layout
-        line1 = f"{lead_emoji} {title} {member_name}{geo} {verb} a {action} in ${ticker} on {trans_date} (≈{amount_display})."
-        line2 = perf_snippet  # may be empty
-        line3_base = f"{insight} #CongressTrades"
-        line3 = f"{line3_base} {sector_tag}" if sector_tag else line3_base
+        # Template builders (single responsibility, max 2 lines)
+        def t_clean_news():
+            line1 = f"{emoji} {who}{geo} disclosed a {action} in {ticker_or_undisclosed} on {trans_date} (≈{amount_display})."
+            return line1
 
-        # Assemble with newlines and enforce 280 chars by trimming extras first
-        parts = [p for p in [line1, line2, line3] if p]
-        candidate = "\n\n".join(parts)
-        if len(candidate) <= 280:
-            return candidate
+        def t_performance_snap():
+            if not perf_has_pct:
+                return None
+            vs_spx = f"; {spx_change} vs S&P" if spx_change else ""
+            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} on {trans_date} (≈{amount_display})."
+            line2 = f"Since then: {perf.split(' since')[0].replace(f'${ticker}', '').strip()}{vs_spx}." if ticker else perf
+            return f"{line1}\n{line2}".strip()
 
-        # Drop sector hashtag if needed
-        if sector_tag and (len(candidate) - (len(sector_tag) + 1)) <= 280:
-            return candidate.replace(f" {sector_tag}", "")
+        def t_pattern_watch():
+            rc = repeat_ticker_12m
+            if rc and isinstance(rc, (int, float)) and rc >= 2:
+                line1 = f"{emoji} {who}{geo} filed a {action} in {ticker_or_undisclosed}."
+                line2 = f"{int(rc)}x in 12 months."
+                return f"{line1}\n{line2}"
+            if member_trade_count_30d and isinstance(member_trade_count_30d, (int, float)) and member_trade_count_30d >= 3:
+                line1 = f"{emoji} {who}{geo} filed a {action} in {ticker_or_undisclosed}."
+                line2 = f"{int(member_trade_count_30d)} trades in 30 days."
+                return f"{line1}\n{line2}"
+            return None
 
-        # Truncate insight if still long
-        if insight and len(candidate) > 280:
-            keep = 280 - (len(line1) + 2 + len(line2)) - len(" #CongressTrades")
-            if keep > 40:
-                truncated = (insight[: keep - 1] + "…") if len(insight) > keep else insight
-                candidate = "\n\n".join([s for s in [line1, line2, f"{truncated} #CongressTrades"] if s])
-                if len(candidate) <= 280:
-                    return candidate
+        def t_lag_callout():
+            if lag_days is None or lag_days < 10:
+                return None
+            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} on {trans_date} (≈{amount_display})."
+            line2 = f"Filed {lag_days} days later."
+            return f"{line1}\n{line2}"
 
-        # If still too long, drop performance line
-        candidate = "\n\n".join([line1, line3_base])
-        if len(candidate) + (len(sector_tag) + 1 if sector_tag else 0) <= 280:
-            return candidate + (f" {sector_tag}" if sector_tag else "")
+        def t_sector_angle():
+            if not sector_tag or not ticker:
+                return None
+            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} ({sector_tag}) on {trans_date} (≈{amount_display})."
+            return line1
 
-        # Compact fallback
-        compact = f"{lead_emoji} {title} {member_name}{geo} {verb} {action} ${ticker} on {trans_date} (≈{amount_display}). #CongressTrades"
-        if sector_tag and len(compact) + len(sector_tag) + 1 <= 280:
-            compact += f" {sector_tag}"
-        return compact[:280]
+        def t_options_focus():
+            atype = (trade.get('assetType') or trade.get('asset_type') or '').lower()
+            if 'option' not in atype and not any(k in trade for k in ['option_type', 'option_side']):
+                return None
+            side = (trade.get('option_side') or '').upper()
+            otype = (trade.get('option_type') or '').upper()
+            side_txt = side if side in {'CALL', 'PUT'} else 'OPTION'
+            type_txt = otype if otype in {'CALL', 'PUT'} else 'Option'
+            line1 = f"{emoji} {who}{geo} disclosed {side_txt} {type_txt} on {ticker_or_undisclosed} (≈{amount_display}) dated {trans_date}."
+            return line1
+
+        # Build candidates based on available signal
+        candidates = []
+        variants = [t_performance_snap(), t_pattern_watch(), t_lag_callout(), t_options_focus(), t_sector_angle(), t_clean_news()]
+        for v in variants:
+            if not v:
+                continue
+            candidates.append(v)
+
+        # Engagement heuristic scoring
+        def score(text: str) -> int:
+            s = 0
+            if perf_has_pct and ('Since then:' in text or 'Since trade' in text):
+                s += 3
+            if spx_change and 'S&P' in text:
+                s += 2
+            if lag_days and lag_days >= 10 and ('Filed' in text or 'Lag:' in text):
+                s += 2
+            if repeat_ticker_12m and isinstance(repeat_ticker_12m, (int, float)) and repeat_ticker_12m >= 2 and ('12 months' in text):
+                s += 2
+            if 'OPTION' in text or 'Option' in text:
+                s += 2
+            # Prefer those that include a newline (two-line format) a bit
+            if '\n' in text:
+                s += 1
+            # Penalize missing ticker
+            if '$' not in text and 'undisclosed ticker' in text:
+                s -= 2
+            return s
+
+        # Choose best by score; tie-break using a stable hash to add variation
+        if not candidates:
+            candidates = [t_clean_news()]
+        scored = sorted(candidates, key=lambda x: (-score(x), hash((ticker, trans_date, x)) % 5))
+        chosen = scored[0]
+
+        # Hashtags: up to 2; prefer none when tight
+        hashtag_pool = ["#CongressTrades", "#InsiderActivity", "#Markets"]
+        if sector_tag:
+            hashtag_pool.insert(0, sector_tag)
+
+        # Append at most two that fit
+        def append_tags(text: str) -> str:
+            out = text
+            added = []
+            for tag in hashtag_pool:
+                if len(added) >= 2:
+                    break
+                if tag in out:
+                    continue
+                tentative = f"{out}\n{tag}" if '\n' in out else f"{out} {tag}"
+                if len(tentative) <= 280:
+                    out = tentative
+                    added.append(tag)
+            return out
+
+        # Ensure core facts line is present
+        final_text = chosen
+        final_text = append_tags(final_text)
+        final_text = collapse_spaces(final_text)
+
+        # Enforce 280: drop hashtags first
+        if len(final_text) > 280:
+            parts = final_text.split('\n')
+            # remove any hashtags at end
+            parts = [p for p in parts if not (p.startswith('#') or p.endswith('#CongressTrades') or p.endswith('#InsiderActivity') or p.endswith('#Markets'))]
+            final_text = '\n'.join(parts)
+        if len(final_text) > 280:
+            # try trimming the trailing fragment after newline
+            if '\n' in final_text:
+                head, tail = final_text.split('\n', 1)
+                final_text = head
+        if len(final_text) > 280:
+            final_text = final_text[:280]
+
+        return final_text
     
     def _format_amount(self, amount_str: str) -> str:
         """Format amount string for display."""
