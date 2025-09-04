@@ -332,7 +332,37 @@ class TwitterClient:
             final_text = final_text[:280]
 
         return final_text
-    
+
+    def _format_multi_trade_tweet(self, bundle: Dict) -> str:
+        """Format a tweet summarizing multiple trades from the same member."""
+        first = (bundle.get('firstName') or '').strip()
+        last = (bundle.get('lastName') or '').strip()
+        member_name = f"{first} {last}".strip()
+        disclosure_date = (bundle.get('disclosureDate') or '').strip()
+
+        trades = bundle.get('trades', [])
+        title = "Sen." if any('senate' in (t.get('source') or '').lower() for t in trades) else "Rep."
+
+        parts = []
+        for t in trades:
+            raw_action = (t.get('type') or '').strip()
+            action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
+            symbol = (t.get('symbol') or '').upper().strip()
+            amount_display = self._format_amount(t.get('amount', ''))
+            parts.append(f"{action} ${symbol} ({amount_display})")
+
+        summary = '; '.join(parts)
+        tweet = f"📊 {title} {member_name} disclosed multiple trades on {disclosure_date}: {summary} #CongressTrades"
+
+        if len(tweet) > 280:
+            prefix = f"📊 {title} {member_name} disclosed multiple trades on {disclosure_date}: "
+            suffix = " #CongressTrades"
+            allowed = 280 - len(prefix) - len(suffix)
+            summary = summary[:allowed - 3] + '...' if allowed > 3 else summary[:allowed]
+            tweet = f"{prefix}{summary}{suffix}"
+
+        return tweet
+
     def _format_amount(self, amount_str: str) -> str:
         """Format amount string for display."""
         if not amount_str:
@@ -406,14 +436,18 @@ class TwitterClient:
                   firstName, lastName, type, symbol, amount, transactionDate, etc.
         """
         try:
-            # Choose style
-            tweet_text = self._format_trade_tweet_engaging(trade) if self.use_engaging_style else self._format_trade_tweet(trade)
+            # Choose style based on single vs. multiple trades
+            if 'trades' in trade:
+                tweet_text = self._format_multi_trade_tweet(trade)
+                symbol = ''  # no chart for aggregated trades
+            else:
+                tweet_text = self._format_trade_tweet_engaging(trade) if self.use_engaging_style else self._format_trade_tweet(trade)
+                symbol = (trade.get('symbol') or '').upper().strip()
             logger.info(f"Posting tweet: {tweet_text}")
-            
+
             media_ids: Optional[List[int]] = None
 
             # Optionally attach a small chart image for the symbol
-            symbol = (trade.get('symbol') or '').upper().strip()
             if self.attach_chart and symbol and plt is not None:
                 try:
                     image_path = self._build_chart_for_symbol(symbol, trade.get('transactionDate'))
@@ -430,7 +464,7 @@ class TwitterClient:
 
             # Post tweet with retry logic (optionally with media)
             self._post_with_retry(tweet_text, media_ids=media_ids)
-            
+
             logger.info("Tweet posted successfully")
             
         except Exception as e:
@@ -903,30 +937,41 @@ class TwitterClient:
         return None, None
 
 
-def post_trades_to_twitter(trades: list) -> None:
-    """
-    Post multiple trades to Twitter.
-    
-    Args:
-        trades: List of trade dictionaries
-    """
+def _aggregate_trades_by_member(trades: List[Dict]) -> List[Dict]:
+    """Group trades by member and disclosure date."""
+    grouped: Dict[Tuple[str, str, str], List[Dict]] = {}
+    for t in trades:
+        key = (t.get('firstName'), t.get('lastName'), t.get('disclosureDate'))
+        grouped.setdefault(key, []).append(t)
+
+    aggregated: List[Dict] = []
+    for (first, last, date), items in grouped.items():
+        if len(items) == 1:
+            aggregated.append(items[0])
+        else:
+            aggregated.append({'firstName': first, 'lastName': last, 'disclosureDate': date, 'trades': items})
+    return aggregated
+
+
+def post_trades_to_twitter(trades: List[Dict]) -> None:
+    """Post multiple trades to Twitter, aggregating by member and day."""
     if not trades:
         logger.info("No trades to post to Twitter")
         return
-    
+
     try:
         twitter_client = TwitterClient()
-        
-        for i, trade in enumerate(trades):
-            logger.info(f"Posting trade {i+1}/{len(trades)}: {trade.get('symbol', 'Unknown')}")
+        aggregated = _aggregate_trades_by_member(trades)
+
+        for i, trade in enumerate(aggregated):
+            logger.info(f"Posting trade {i+1}/{len(aggregated)}")
             twitter_client.post_trade_tweet(trade)
-            
-            # Add delay between posts to avoid hitting rate limits
-            if i < len(trades) - 1:  # Don't wait after the last tweet
-                time.sleep(5)  # 5 second delay between tweets
-                
-        logger.info(f"Successfully posted {len(trades)} trades to Twitter")
-        
+
+            if i < len(aggregated) - 1:
+                time.sleep(5)
+
+        logger.info(f"Successfully posted {len(aggregated)} trades to Twitter")
+
     except Exception as e:
         logger.error(f"Error posting trades to Twitter: {str(e)}")
-        raise 
+        raise
