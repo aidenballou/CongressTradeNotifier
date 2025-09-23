@@ -343,23 +343,78 @@ class TwitterClient:
         trades = bundle.get('trades', [])
         title = "Sen." if any('senate' in (t.get('source') or '').lower() for t in trades) else "Rep."
 
-        parts = []
+        bullet_lines = []
         for t in trades:
             raw_action = (t.get('type') or '').strip()
-            action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
+            action = (
+                "BUY"
+                if raw_action.lower() in {"buy", "purchase"}
+                else (
+                    "SELL"
+                    if raw_action.lower() in {"sell", "sale"}
+                    else raw_action.upper() or "TRADE"
+                )
+            )
             symbol = (t.get('symbol') or '').upper().strip()
             amount_display = self._format_amount(t.get('amount', ''))
-            parts.append(f"{action} ${symbol} ({amount_display})")
+            bullet_lines.append(f"- {action} ${symbol} ({amount_display})")
 
-        summary = '; '.join(parts)
-        tweet = f"📊 {title} {member_name} disclosed multiple trades on {disclosure_date}: {summary} #CongressTrades"
+        header = f"📊 {title} {member_name} disclosed multiple trades on {disclosure_date}:"
+        suffix = "\n#CongressTrades"
+
+        def try_append_line(lines: List[str], new_line: str) -> Optional[List[str]]:
+            """Attempt to append a new line while respecting X character limits."""
+
+            candidate_lines = lines + [new_line]
+            candidate_text = "\n".join(candidate_lines) + suffix
+            if len(candidate_text) <= 280:
+                return candidate_lines
+
+            # Try truncating the new line if nothing has been added yet
+            base_text_len = len("\n".join(lines))
+            allowed_len = 280 - base_text_len - len(suffix) - (1 if lines else 0)
+            if allowed_len > 3:
+                truncated = new_line[: allowed_len - 1].rstrip()
+                truncated = f"{truncated}…"
+                candidate_text = ("\n".join(lines + [truncated]) + suffix).rstrip()
+                if len(candidate_text) <= 280:
+                    return lines + [truncated]
+
+            return None
+
+        lines: List[str] = [header.strip()]
+        included = 0
+        for bullet in bullet_lines:
+            updated_lines = try_append_line(lines, bullet)
+            if updated_lines is None:
+                break
+            lines = updated_lines
+            included += 1
+
+        remaining = len(bullet_lines) - included
+        if remaining > 0:
+            for more_line in (
+                f"- … and {remaining} more",
+                f"- … +{remaining}",
+                "- …",
+            ):
+                updated_lines = try_append_line(lines, more_line)
+                if updated_lines is not None:
+                    lines = updated_lines
+                    break
+
+        tweet = "\n".join(lines) + suffix
 
         if len(tweet) > 280:
-            prefix = f"📊 {title} {member_name} disclosed multiple trades on {disclosure_date}: "
-            suffix = " #CongressTrades"
-            allowed = 280 - len(prefix) - len(suffix)
-            summary = summary[:allowed - 3] + '...' if allowed > 3 else summary[:allowed]
-            tweet = f"{prefix}{summary}{suffix}"
+            # Prefer keeping content over the hashtag if necessary
+            if tweet.endswith(suffix):
+                without_hashtag = tweet[: -len(suffix)]
+                if len(without_hashtag) <= 280:
+                    tweet = without_hashtag
+                else:
+                    tweet = without_hashtag[:280].rstrip()
+            else:
+                tweet = tweet[:280].rstrip()
 
         return tweet
 
