@@ -221,8 +221,10 @@ class TestTwitterClient:
 
         tweet = client._format_multi_trade_tweet(bundle)
         assert 'multiple trades' in tweet
-        assert '$EXC' in tweet and '$SO' in tweet
-        assert '#CongressTrades' in tweet
+        assert '- BUY $EXC ($33K)' in tweet
+        assert '- BUY $SO ($8K)' in tweet
+        assert '#CongressTrades' in tweet.split('\n')[-1]
+        assert tweet.count('\n') >= 3  # header + 2 bullets + hashtag line
         assert len(tweet) <= 280
 
     @patch('src.twitter_client.TwitterClient')
