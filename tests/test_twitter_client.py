@@ -60,8 +60,8 @@ class TestTwitterClient:
         assert 'Sen. John Doe' in tweet
         assert 'BUY' in tweet
         assert '$AAPL' in tweet
-        assert '2025-01-15' in tweet
-        assert '$8K' in tweet  # Average of 1000-15000
+        assert 'today' in tweet
+        assert 'up to $15k' in tweet
         assert '#CongressTrades' in tweet
         assert len(tweet) <= 280
     
@@ -93,7 +93,8 @@ class TestTwitterClient:
         assert 'Rep. Jane Smith' in tweet
         assert 'SELL' in tweet
         assert '$TSLA' in tweet
-        assert '$75K' in tweet  # Average of 50000-100000
+        assert 'today' in tweet
+        assert 'up to $100k' in tweet
         assert '#CongressTrades' in tweet
         assert len(tweet) <= 280
     
@@ -109,11 +110,12 @@ class TestTwitterClient:
         client = TwitterClient()
         
         # Test various amount ranges
-        assert client._format_amount('$1,000 - $15,000') == '$8K'
-        assert client._format_amount('$1,000,000 - $5,000,000') == '$3.0M'
-        assert client._format_amount('$500 - $1,000') == '$750'
-        assert client._format_amount('') == 'undisclosed amount'
-        assert client._format_amount('$15,000 - $50,000') == '$32K'  # 32.5K rounds to 32K
+        assert client._format_amount('$1,000 - $15,000') == 'up to $15k'
+        assert client._format_amount('$1,000,000 - $5,000,000') == 'up to $5M'
+        assert client._format_amount('$500 - $1,000') == 'up to $1k'
+        assert client._format_amount('') == 'an undisclosed amount'
+        assert client._format_amount('$15,000 - $50,000') == 'up to $50k'
+        assert client._format_amount('$250,000') == '$250k'
     
     @patch.dict('os.environ', {
         'TWITTER_API_KEY': 'test_key',
@@ -220,12 +222,38 @@ class TestTwitterClient:
         }
 
         tweet = client._format_multi_trade_tweet(bundle)
-        assert 'multiple trades' in tweet
-        assert '- BUY $EXC ($33K)' in tweet
-        assert '- BUY $SO ($8K)' in tweet
+        assert 'multiple trades today' in tweet
+        assert '- BUY $EXC (up to $50k)' in tweet
+        assert '- BUY $SO (up to $15k)' in tweet
         assert '#CongressTrades' in tweet.split('\n')[-1]
         assert tweet.count('\n') >= 3  # header + 2 bullets + hashtag line
         assert len(tweet) <= 280
+
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_select_trade_for_chart_prefers_best_gain(self, mock_client):
+        """Ensure the bundle chart picker favors the symbol with the strongest performance."""
+        client = TwitterClient()
+
+        bundle = {
+            'disclosureDate': '2025-09-01',
+            'trades': [
+                {'symbol': 'AAA', 'transactionDate': '2025-08-20'},
+                {'symbol': 'BBB', 'transactionDate': '2025-08-21'},
+                {'symbol': 'CCC', 'transactionDate': '2025-08-22'},
+            ]
+        }
+
+        with patch.object(client, '_calculate_performance_since', side_effect=[5.0, 12.0, None]):
+            symbol, trade_date = client._select_trade_for_chart(bundle)
+
+        assert symbol == 'BBB'
+        assert trade_date == '2025-08-21'
 
     @patch('src.twitter_client.TwitterClient')
     def test_post_trades_to_twitter_aggregates(self, mock_client_cls):

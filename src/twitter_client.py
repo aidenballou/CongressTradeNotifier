@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 import tempfile
@@ -112,7 +113,7 @@ class TwitterClient:
         emoji = "🚀" if action == "BUY" else "⚠️" if action == "SELL" else "📊"
         
         # Build tweet with character limit consideration
-        base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} on {date} ({amount_display}). {insight} #CongressTrades"
+        base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} today ({amount_display}). {insight} #CongressTrades"
         
         # Add sector hashtag if we can fit it
         sector_tag = self._get_sector_hashtag(asset_desc)
@@ -125,10 +126,10 @@ class TwitterClient:
             max_insight_len = 280 - len(base_tweet) + len(insight) - 3  # -3 for "..."
             if max_insight_len > 10:
                 insight = insight[:max_insight_len] + "..."
-                base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} on {date} ({amount_display}). {insight} #CongressTrades"
+                base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} today ({amount_display}). {insight} #CongressTrades"
             else:
                 # Remove insight if still too long
-                base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} on {date} ({amount_display}). #CongressTrades"
+                base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} today ({amount_display}). #CongressTrades"
         
         return base_tweet
 
@@ -161,7 +162,7 @@ class TwitterClient:
             return ' '.join(s.replace('\n', '\n ').split())
 
         # Compute derived
-        amount_display = self._format_amount(amount_str) or "undisclosed"
+        amount_display = self._format_amount(amount_str)
         sector_tag = self._get_sector_hashtag(asset_desc)
         emoji = "🟢" if action == "BUY" else ("🔴" if action == "SELL" else ("🟣" if 'option' in asset_desc.lower() else "🔵"))
         who = f"{title} {member_name}"
@@ -189,14 +190,14 @@ class TwitterClient:
 
         # Template builders (single responsibility, max 2 lines)
         def t_clean_news():
-            line1 = f"{emoji} {who}{geo} disclosed a {action} in {ticker_or_undisclosed} on {trans_date} (≈{amount_display})."
+            line1 = f"{emoji} {who}{geo} disclosed a {action} in {ticker_or_undisclosed} today ({amount_display})."
             return line1
 
         def t_performance_snap():
             if not perf_has_pct:
                 return None
             vs_spx = f"; {spx_change} vs S&P" if spx_change else ""
-            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} on {trans_date} (≈{amount_display})."
+            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} today ({amount_display})."
             line2 = f"Since then: {perf.split(' since')[0].replace(f'${ticker}', '').strip()}{vs_spx}." if ticker else perf
             return f"{line1}\n{line2}".strip()
 
@@ -215,14 +216,14 @@ class TwitterClient:
         def t_lag_callout():
             if lag_days is None or lag_days < 10:
                 return None
-            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} on {trans_date} (≈{amount_display})."
+            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} today ({amount_display})."
             line2 = f"Filed {lag_days} days later."
             return f"{line1}\n{line2}"
 
         def t_sector_angle():
             if not sector_tag or not ticker:
                 return None
-            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} ({sector_tag}) on {trans_date} (≈{amount_display})."
+            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} ({sector_tag}) today ({amount_display})."
             return line1
 
         def t_options_focus():
@@ -233,7 +234,7 @@ class TwitterClient:
             otype = (trade.get('option_type') or '').upper()
             side_txt = side if side in {'CALL', 'PUT'} else 'OPTION'
             type_txt = otype if otype in {'CALL', 'PUT'} else 'Option'
-            line1 = f"{emoji} {who}{geo} disclosed {side_txt} {type_txt} on {ticker_or_undisclosed} (≈{amount_display}) dated {trans_date}."
+            line1 = f"{emoji} {who}{geo} disclosed {side_txt} {type_txt} on {ticker_or_undisclosed} today ({amount_display})."
             return line1
 
         # Build candidates based on available signal
@@ -338,8 +339,6 @@ class TwitterClient:
         first = (bundle.get('firstName') or '').strip()
         last = (bundle.get('lastName') or '').strip()
         member_name = f"{first} {last}".strip()
-        disclosure_date = (bundle.get('disclosureDate') or '').strip()
-
         trades = bundle.get('trades', [])
         title = "Sen." if any('senate' in (t.get('source') or '').lower() for t in trades) else "Rep."
 
@@ -359,7 +358,7 @@ class TwitterClient:
             amount_display = self._format_amount(t.get('amount', ''))
             bullet_lines.append(f"- {action} ${symbol} ({amount_display})")
 
-        header = f"📊 {title} {member_name} disclosed multiple trades on {disclosure_date}:"
+        header = f"📊 {title} {member_name} disclosed multiple trades today:"
         suffix = "\n#CongressTrades"
 
         def try_append_line(lines: List[str], new_line: str) -> Optional[List[str]]:
@@ -419,31 +418,40 @@ class TwitterClient:
         return tweet
 
     def _format_amount(self, amount_str: str) -> str:
-        """Format amount string for display."""
+        """Format amount string for display with a focus on the top-end of any disclosed range."""
         if not amount_str:
-            return "undisclosed amount"
-        
-        # Clean up amount string
-        cleaned = amount_str.replace('$', '').replace(',', '')
-        
-        # Handle range format
-        if ' - ' in cleaned:
-            parts = cleaned.split(' - ')
-            if len(parts) == 2:
-                try:
-                    min_val = float(parts[0])
-                    max_val = float(parts[1])
-                    avg_val = (min_val + max_val) / 2
-                    
-                    if avg_val >= 1000000:
-                        return f"${avg_val/1000000:.1f}M"
-                    elif avg_val >= 1000:
-                        return f"${avg_val/1000:.0f}K"
-                    else:
-                        return f"${avg_val:.0f}"
-                except ValueError:
-                    pass
-        
+            return "an undisclosed amount"
+
+        cleaned = amount_str.replace(',', '')
+        numbers = []
+        for match in re.findall(r"[0-9]+(?:\.[0-9]+)?", cleaned):
+            try:
+                numbers.append(float(match))
+            except ValueError:
+                continue
+
+        def humanize(value: float) -> str:
+            if value >= 1_000_000:
+                scaled = value / 1_000_000
+                text = f"{scaled:.1f}" if scaled < 10 else f"{scaled:.0f}"
+                if text.endswith(".0"):
+                    text = text[:-2]
+                return f"${text}M"
+            if value >= 1_000:
+                scaled = value / 1_000
+                text = f"{scaled:.1f}" if scaled < 10 else f"{scaled:.0f}"
+                if text.endswith(".0"):
+                    text = text[:-2]
+                return f"${text}k"
+            return f"${value:,.0f}"
+
+        if numbers:
+            max_val = max(numbers)
+            display = humanize(max_val)
+            if len(numbers) >= 2:
+                return f"up to {display}"
+            return display
+
         return amount_str
     
     def _generate_insight(self, trade: Dict) -> str:
@@ -468,7 +476,7 @@ class TwitterClient:
     def _get_sector_hashtag(self, asset_desc: str) -> Optional[str]:
         """Get relevant sector hashtag based on asset description."""
         asset_desc_lower = asset_desc.lower()
-        
+
         if any(term in asset_desc_lower for term in ['tech', 'software', 'apple', 'microsoft']):
             return "#Tech"
         elif any(term in asset_desc_lower for term in ['bank', 'financial']):
@@ -481,6 +489,38 @@ class TwitterClient:
             return "#Defense"
         else:
             return "#Investing"
+
+    def _select_trade_for_chart(self, bundle: Dict) -> Tuple[str, Optional[str]]:
+        """Pick the trade whose symbol has the strongest performance since disclosure for charting."""
+        trades = bundle.get('trades') or []
+        disclosure_date = (bundle.get('disclosureDate') or '').strip()
+
+        best_symbol = ''
+        best_trade_date: Optional[str] = None
+        best_performance: Optional[float] = None
+
+        for trade in trades:
+            symbol = (trade.get('symbol') or '').upper().strip()
+            if not symbol:
+                continue
+            perf_start = (trade.get('disclosureDate') or disclosure_date or '').strip()
+            change = self._calculate_performance_since(symbol, perf_start)
+            if change is None:
+                continue
+            if best_performance is None or change > best_performance:
+                best_symbol = symbol
+                best_trade_date = trade.get('transactionDate')
+                best_performance = change
+
+        if best_symbol:
+            return best_symbol, best_trade_date
+
+        for trade in trades:
+            symbol = (trade.get('symbol') or '').upper().strip()
+            if symbol:
+                return symbol, trade.get('transactionDate')
+
+        return '', None
     
     def post_trade_tweet(self, trade: Dict) -> None:
         """
@@ -494,18 +534,19 @@ class TwitterClient:
             # Choose style based on single vs. multiple trades
             if 'trades' in trade:
                 tweet_text = self._format_multi_trade_tweet(trade)
-                symbol = ''  # no chart for aggregated trades
+                chart_symbol, chart_date = self._select_trade_for_chart(trade)
             else:
                 tweet_text = self._format_trade_tweet_engaging(trade) if self.use_engaging_style else self._format_trade_tweet(trade)
-                symbol = (trade.get('symbol') or '').upper().strip()
+                chart_symbol = (trade.get('symbol') or '').upper().strip()
+                chart_date = trade.get('transactionDate')
             logger.info(f"Posting tweet: {tweet_text}")
 
             media_ids: Optional[List[int]] = None
 
             # Optionally attach a small chart image for the symbol
-            if self.attach_chart and symbol and plt is not None:
+            if self.attach_chart and chart_symbol and plt is not None:
                 try:
-                    image_path = self._build_chart_for_symbol(symbol, trade.get('transactionDate'))
+                    image_path = self._build_chart_for_symbol(chart_symbol, chart_date)
                     if image_path:
                         media_id = self.api_v1.media_upload(filename=image_path).media_id
                         media_ids = [media_id]
@@ -514,7 +555,7 @@ class TwitterClient:
                         except Exception:
                             pass
                 except Exception as chart_err:
-                    logger.warning(f"Chart generation/upload failed for {symbol}: {chart_err}")
+                    logger.warning(f"Chart generation/upload failed for {chart_symbol}: {chart_err}")
                     media_ids = None
 
             # Post tweet with retry logic (optionally with media)
@@ -909,6 +950,19 @@ class TwitterClient:
     # -------------------------
     # Performance snippet helpers
     # -------------------------
+    def _calculate_performance_since(self, symbol: str, start_date: Optional[str]) -> Optional[float]:
+        """Return percentage change from the first close on/after start_date to the latest close."""
+        if not symbol or not start_date:
+            return None
+        try:
+            entry_price, _ = self._get_close_on_or_after(symbol, start_date)
+            latest_price, _ = self._get_latest_close(symbol)
+            if entry_price is None or latest_price is None or entry_price <= 0:
+                return None
+            return (latest_price - entry_price) / entry_price * 100.0
+        except Exception:
+            return None
+
     def _build_performance_snippet(self, symbol: str, action: str, transaction_date: Optional[str]) -> str:
         """Return a short line like: "$XYZ is up 3.2% since the purchase." if data available."""
         try:
