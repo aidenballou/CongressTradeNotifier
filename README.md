@@ -1,95 +1,151 @@
 # CongressTradeNotifier
 
-A Python tool that fetches and stores the latest US congressional stock trades, emails a daily summary, and automatically posts engaging tweets for each new trade detected.
+CongressTradeNotifier watches the official U.S. House and Senate trade disclosures, persists any new activity, and turns it into
+shareable updates. The project pulls data from the Financial Modeling Prep (FMP) API, deduplicates the filings in a local
+SQLite database, emails a daily HTML digest, and crafts polished tweets (optionally with charts and performance stats) for
+social media distribution.
 
-## Features
+## Highlights
 
-- Fetches the latest Senate and House trades from the Financial Modeling Prep API
-- Stores unique trades in a local SQLite database
-- Sends a daily HTML email summary of new trades
-- **NEW**: Automatically posts personalized tweets for each trade with market insights
+- **Automated trade ingestion** – Fetches the latest disclosures for both chambers via the FMP API and records only new
+  transactions in `trades.sqlite3`. 【F:src/fmp_client.py†L10-L59】【F:src/notifier.py†L1-L45】【F:src/db.py†L1-L24】
+- **Daily operator workflow** – `src/main.py` coordinates the full pipeline: fetch trades, persist, email a same-day summary,
+  and publish tweets. 【F:src/main.py†L1-L39】
+- **Rich Twitter automation** – Generates engaging single- or multi-trade posts, applies heuristics for tone and hashtags, can
+  attach price charts, and retries transient API failures. 【F:src/twitter_client.py†L38-L213】【F:src/twitter_client.py†L421-L658】【F:src/twitter_client.py†L1137-L1177】
+- **Email reporting** – Sends an HTML table that highlights each disclosure for the day, ready to drop into an inbox. 【F:src/emailer.py†L1-L81】
+- **Developer tooling** – Includes a tweet preview script and pytest suite for validating copy, formatting, and Twitter client
+  behavior. 【F:scripts/preview_tweet.py†L1-L138】【F:tests/test_twitter_client.py†L1-L150】
+
+## Project structure
+
+```
+├── src/
+│   ├── main.py              # Entry point that runs the daily workflow
+│   ├── fmp_client.py        # Financial Modeling Prep API helpers
+│   ├── notifier.py          # Persistence + dedupe logic
+│   ├── emailer.py           # HTML summary email generator
+│   ├── twitter_client.py    # Tweet formatting, media creation, and posting
+│   └── db.py                # SQLite schema + shared connection
+├── scripts/
+│   └── preview_tweet.py     # CLI to preview tweets or charts without new trades
+├── tests/                   # Pytest suite for Twitter automation
+├── requirements.txt
+└── README.md
+```
 
 ## Requirements
 
 - Python 3.9+
-- `requests`, `python-dotenv`, `tweepy`, `pytest`, `pytest-mock`
+- Dependencies listed in `requirements.txt` (`requests`, `python-dotenv`, `tweepy`, `matplotlib`, `pytest`, `pytest-mock`,
+  `yfinance`). 【F:requirements.txt†L1-L7】
 
-## Setup
+Install packages with:
 
-1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Configuration
 
-2. Set the following environment variables (e.g., in a `.env` file in the project root):
+Environment variables (typically placed in a `.env` file) control API access, email delivery, and Twitter automation. The
+application automatically loads them via `python-dotenv`.
 
-   **Email Configuration:**
+### Core data sources
 
-   - `FMP_API_KEY` (Financial Modeling Prep API key)
-   - `SMTP_HOST` (SMTP server hostname)
-   - `SMTP_PORT` (SMTP server port)
-   - `SMTP_USER` (SMTP username)
-   - `SMTP_PASS` (SMTP password)
-   - `EMAIL_RECIPIENT` (email address to receive summaries)
+| Variable | Purpose |
+| --- | --- |
+| `FMP_API_KEY` | Financial Modeling Prep API key used for trade ingestion, performance stats, and price charts. |
 
-   **Twitter Configuration:**
+### Email delivery
 
-   - `TWITTER_API_KEY` (Twitter API consumer key)
-   - `TWITTER_API_SECRET` (Twitter API consumer secret)
-   - `TWITTER_ACCESS_TOKEN` (Twitter access token)
-   - `TWITTER_ACCESS_SECRET` (Twitter access token secret)
+| Variable | Purpose |
+| --- | --- |
+| `SMTP_HOST` | SMTP server hostname. |
+| `SMTP_PORT` | SMTP server port. |
+| `SMTP_USER` | SMTP username / from address. |
+| `SMTP_PASS` | SMTP password or app-specific password. |
+| `EMAIL_RECIPIENT` | Where the daily HTML summary should be delivered. |
 
-3. **GitHub Secrets Setup** (for automated runs):
-   In your GitHub repository settings, add the above environment variables as secrets.
+### Twitter automation
 
-## Usage
+| Variable | Purpose |
+| --- | --- |
+| `TWITTER_API_KEY` | X (Twitter) API consumer key. |
+| `TWITTER_API_SECRET` | X (Twitter) API consumer secret. |
+| `TWITTER_ACCESS_TOKEN` | X (Twitter) access token for the posting account. |
+| `TWITTER_ACCESS_SECRET` | X (Twitter) access token secret. |
+| `TWITTER_ATTACH_CHART` | Optional (`true`/`false`). Toggle automatic price chart attachments (defaults to `true`). |
+| `TWITTER_STYLE` | Optional (`engaging` or `classic`). Selects the copywriting style for posts (defaults to `engaging`). |
 
-Run the notifier manually or schedule it (e.g., with cron/GitHub Actions) to send daily summaries and tweets:
+> Tip: When running in CI (GitHub Actions, cron, etc.) export these values as secrets so the workflow can authenticate without
+> exposing credentials.
+
+## Running the notifier
+
+Execute the full workflow once per day (manually or via a scheduler):
 
 ```bash
 python src/main.py
 ```
 
-This will:
+This command will:
 
-1. Fetch the latest congressional trades
-2. Store new ones in the database
-3. Email a summary of trades disclosed today
-4. Post individual tweets for each new trade with market insights
+1. Download the most recent Senate and House transactions from FMP.
+2. Deduplicate the data and append any new filings to `trades.sqlite3`.
+3. Email an HTML table summarizing disclosures filed **today** (Eastern Time).
+4. Post tweets for each member's activity, bundling multiple trades into a single thread-friendly update. Price charts are
+   attached when enabled and market data is available.
 
-## Tweet Format
+All output is logged to stdout, making it easy to monitor from cron or GitHub Actions logs. The SQLite database acts as state,
+so repeated executions only act on new filings.
 
-Example tweet generated by the system:
+## Previewing tweets & charts locally
 
+Use the helper script to inspect copy before posting or to experiment with chart generation:
+
+```bash
+python scripts/preview_tweet.py --from-db      # Preview most recent DB trade
+python scripts/preview_tweet.py --sample       # Preview using a built-in sample trade
+python scripts/preview_tweet.py --from-db --chart  # Also render and save a PNG price chart
+python scripts/preview_tweet.py --from-db --post   # Post the preview to Twitter (counts against API quota)
 ```
-📈 Sen. Jane Doe disclosed a BUY of $XYZ on 2025-01-15 ($58K). Tech sector activity could signal confidence in digital transformation. #CongressTrades #Tech
-```
 
-Each tweet includes:
+The preview respects your environment configuration (style, chart toggles, API credentials). Charts require `matplotlib` and
+will fall back to yfinance if FMP historical endpoints fail. 【F:scripts/preview_tweet.py†L79-L120】【F:src/twitter_client.py†L513-L658】
 
-- Appropriate emoji (📈 for BUY, 📉 for SELL, 📊 for other)
-- Member title and name
-- Trade action and ticker symbol
-- Transaction date and formatted amount
-- AI-generated market insight
-- Relevant hashtags (#CongressTrades + sector-specific)
+## Data storage
+
+- Trade history is stored in `trades.sqlite3` next to the source code. The schema enforces uniqueness on the combination of
+  ticker, disclosure date, transaction date, and amount to prevent duplicates. 【F:src/db.py†L1-L24】
+- Metadata such as last run timestamps can be added via the `metadata` table if needed for future automation. 【F:src/db.py†L16-L23】
+
+Back up the database if you plan to redeploy the notifier or analyze historical trades elsewhere.
 
 ## Testing
 
-Run the test suite:
+Run the automated tests to validate the Twitter client logic:
 
 ```bash
-pytest tests/
+pytest
 ```
 
-Tests cover:
+The suite mocks API clients to verify initialization, tweet formatting, hashtag selection, and error handling behavior without
+making network calls. 【F:tests/test_twitter_client.py†L1-L150】
 
-- Tweet formatting and character limits
-- Rate limiting and retry logic
-- Error handling scenarios
-- API integration with mocking
+## Scheduling ideas
+
+- **Cron job** – Run `python src/main.py` daily after markets close to capture fresh filings.
+- **GitHub Actions** – Create a workflow that checks out the repo, installs dependencies, loads secrets, and invokes the script.
+- **Containerized task** – Package the project in Docker and deploy it to your preferred scheduler (ECS, Cloud Run, etc.).
+
+## Troubleshooting
+
+- Missing API keys or SMTP credentials cause the corresponding subsystem to skip its work while logging a helpful warning.
+- When the Twitter client encounters transient errors (rate limits, network hiccups) it retries with exponential backoff before
+  surfacing the failure. 【F:src/twitter_client.py†L921-L1012】
+- Chart generation requires both `matplotlib` and recent price data. If unavailable the tweet still posts without media. 【F:src/twitter_client.py†L505-L586】
 
 ---
 
-_For personal use. No deployment or hosting required._
+Built for following U.S. Congressional trades and sharing them quickly with your audience.
