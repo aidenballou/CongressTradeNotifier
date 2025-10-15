@@ -58,10 +58,8 @@ class TestTwitterClient:
         
         assert '🚀' in tweet
         assert 'Sen. John Doe' in tweet
-        assert 'BUY' in tweet
-        assert '$AAPL' in tweet
-        assert 'today' in tweet
-        assert 'up to $15k' in tweet
+        assert 'just disclosed a BUY in $AAPL' in tweet
+        assert 'worth up to $15k' in tweet
         assert '#CongressTrades' in tweet
         assert len(tweet) <= 280
     
@@ -91,10 +89,8 @@ class TestTwitterClient:
         
         assert '⚠️' in tweet
         assert 'Rep. Jane Smith' in tweet
-        assert 'SELL' in tweet
-        assert '$TSLA' in tweet
-        assert 'today' in tweet
-        assert 'up to $100k' in tweet
+        assert 'just disclosed a SELL in $TSLA' in tweet
+        assert 'worth up to $100k' in tweet
         assert '#CongressTrades' in tweet
         assert len(tweet) <= 280
     
@@ -222,7 +218,7 @@ class TestTwitterClient:
         }
 
         tweet = client._format_multi_trade_tweet(bundle)
-        assert 'multiple trades today' in tweet
+        assert 'just disclosed up to $65k in trades today!' in tweet
         assert '- BUY $EXC (up to $50k)' in tweet
         assert '- BUY $SO (up to $15k)' in tweet
         assert '#CongressTrades' in tweet.split('\n')[-1]
