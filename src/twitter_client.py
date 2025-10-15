@@ -84,10 +84,10 @@ class TwitterClient:
     def _format_trade_tweet(self, trade: Dict) -> str:
         """
         Format a trade dictionary into an engaging tweet.
-        
+
         Args:
             trade: Dictionary containing trade information
-            
+
         Returns:
             Formatted tweet string ≤ 280 characters
         """
@@ -95,42 +95,44 @@ class TwitterClient:
         member_name = f"{trade.get('firstName', '')} {trade.get('lastName', '')}".strip()
         raw_action = (trade.get('type') or '').strip()
         action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
-        ticker = trade.get('symbol', '')
+        ticker = (trade.get('symbol') or '').upper().strip()
         amount_str = trade.get('amount', '')
-        date = trade.get('transactionDate', '')
         asset_desc = trade.get('assetDescription', '')
-        
+
         # Determine member title (Sen./Rep.)
-        title = "Sen." if "senate" in trade.get('source', '').lower() else "Rep."
-        
+        title = "Sen." if "senate" in (trade.get('source') or '').lower() else "Rep."
+
         # Format amount for display
         amount_display = self._format_amount(amount_str)
-        
+        ticker_display = f"${ticker}" if ticker else "an undisclosed ticker"
+
         # Generate insight based on trade details
         insight = self._generate_insight(trade)
-        
+
         # Select appropriate emoji
         emoji = "🚀" if action == "BUY" else "⚠️" if action == "SELL" else "📊"
-        
+
+        amount_phrase = "with an undisclosed amount" if amount_display == "an undisclosed amount" else f"worth {amount_display}"
+
         # Build tweet with character limit consideration
-        base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} today ({amount_display}). {insight} #CongressTrades"
-        
+        base_tweet = f"{emoji} {title} {member_name} just disclosed a {action} in {ticker_display} {amount_phrase} today. {insight} #CongressTrades"
+
         # Add sector hashtag if we can fit it
         sector_tag = self._get_sector_hashtag(asset_desc)
         if sector_tag and len(base_tweet) + len(sector_tag) + 1 <= 280:
             base_tweet += f" {sector_tag}"
-        
+
         # Ensure tweet is within character limit
         if len(base_tweet) > 280:
             # Truncate insight to fit
             max_insight_len = 280 - len(base_tweet) + len(insight) - 3  # -3 for "..."
             if max_insight_len > 10:
                 insight = insight[:max_insight_len] + "..."
-                base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} today ({amount_display}). {insight} #CongressTrades"
+                base_tweet = f"{emoji} {title} {member_name} just disclosed a {action} in {ticker_display} {amount_phrase} today. {insight} #CongressTrades"
             else:
                 # Remove insight if still too long
-                base_tweet = f"{emoji} {title} {member_name} disclosed a {action} of ${ticker} today ({amount_display}). #CongressTrades"
-        
+                base_tweet = f"{emoji} {title} {member_name} just disclosed a {action} in {ticker_display} {amount_phrase} today. #CongressTrades"
+
         return base_tweet
 
     def _format_trade_tweet_engaging(self, trade: Dict) -> str:
@@ -189,26 +191,40 @@ class TwitterClient:
         spx_change = trade.get('sp500_change_same_window')
 
         # Template builders (single responsibility, max 2 lines)
+        def amount_phrase() -> str:
+            return "with an undisclosed amount" if amount_display == "an undisclosed amount" else f"worth {amount_display}"
+
+        def hook_line(preposition: str = "in", noun: Optional[str] = None, verb: str = "disclosed", include_today: bool = True) -> str:
+            action_noun = noun or f"a {action}"
+            line = f"{emoji} {who}{geo} just {verb} {action_noun}"
+            if preposition:
+                line += f" {preposition} {ticker_or_undisclosed}"
+            line += f" {amount_phrase()}"
+            if include_today:
+                line += " today."
+            else:
+                line += "."
+            return line
+
         def t_clean_news():
-            line1 = f"{emoji} {who}{geo} disclosed a {action} in {ticker_or_undisclosed} today ({amount_display})."
-            return line1
+            return hook_line()
 
         def t_performance_snap():
             if not perf_has_pct:
                 return None
             vs_spx = f"; {spx_change} vs S&P" if spx_change else ""
-            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} today ({amount_display})."
+            line1 = hook_line()
             line2 = f"Since then: {perf.split(' since')[0].replace(f'${ticker}', '').strip()}{vs_spx}." if ticker else perf
             return f"{line1}\n{line2}".strip()
 
         def t_pattern_watch():
             rc = repeat_ticker_12m
             if rc and isinstance(rc, (int, float)) and rc >= 2:
-                line1 = f"{emoji} {who}{geo} filed a {action} in {ticker_or_undisclosed}."
+                line1 = hook_line()
                 line2 = f"{int(rc)}x in 12 months."
                 return f"{line1}\n{line2}"
             if member_trade_count_30d and isinstance(member_trade_count_30d, (int, float)) and member_trade_count_30d >= 3:
-                line1 = f"{emoji} {who}{geo} filed a {action} in {ticker_or_undisclosed}."
+                line1 = hook_line()
                 line2 = f"{int(member_trade_count_30d)} trades in 30 days."
                 return f"{line1}\n{line2}"
             return None
@@ -216,15 +232,14 @@ class TwitterClient:
         def t_lag_callout():
             if lag_days is None or lag_days < 10:
                 return None
-            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} today ({amount_display})."
+            line1 = hook_line()
             line2 = f"Filed {lag_days} days later."
             return f"{line1}\n{line2}"
 
         def t_sector_angle():
             if not sector_tag or not ticker:
                 return None
-            line1 = f"{emoji} {who}{geo} {action} {ticker_or_undisclosed} ({sector_tag}) today ({amount_display})."
-            return line1
+            return hook_line(preposition=f"({sector_tag}) in" if sector_tag else "in")
 
         def t_options_focus():
             atype = (trade.get('assetType') or trade.get('asset_type') or '').lower()
@@ -234,8 +249,7 @@ class TwitterClient:
             otype = (trade.get('option_type') or '').upper()
             side_txt = side if side in {'CALL', 'PUT'} else 'OPTION'
             type_txt = otype if otype in {'CALL', 'PUT'} else 'Option'
-            line1 = f"{emoji} {who}{geo} disclosed {side_txt} {type_txt} on {ticker_or_undisclosed} today ({amount_display})."
-            return line1
+            return hook_line(noun=f"{side_txt} {type_txt}", preposition="on")
 
         # Build candidates based on available signal
         candidates = []
@@ -358,7 +372,8 @@ class TwitterClient:
             amount_display = self._format_amount(t.get('amount', ''))
             bullet_lines.append(f"- {action} ${symbol} ({amount_display})")
 
-        header = f"📊 {title} {member_name} disclosed multiple trades today:"
+        total_amount_display = self._format_bundle_amount(trades)
+        header = f"📊 {title} {member_name} just disclosed {total_amount_display} in trades today!"
         suffix = "\n#CongressTrades"
 
         def try_append_line(lines: List[str], new_line: str) -> Optional[List[str]]:
@@ -417,42 +432,99 @@ class TwitterClient:
 
         return tweet
 
-    def _format_amount(self, amount_str: str) -> str:
-        """Format amount string for display with a focus on the top-end of any disclosed range."""
+    def _extract_amount_numbers(self, amount_str: str) -> List[float]:
+        """Extract numeric values from an amount string."""
         if not amount_str:
-            return "an undisclosed amount"
+            return []
 
         cleaned = amount_str.replace(',', '')
-        numbers = []
+        numbers: List[float] = []
         for match in re.findall(r"[0-9]+(?:\.[0-9]+)?", cleaned):
             try:
                 numbers.append(float(match))
             except ValueError:
                 continue
+        return numbers
 
-        def humanize(value: float) -> str:
-            if value >= 1_000_000:
-                scaled = value / 1_000_000
-                text = f"{scaled:.1f}" if scaled < 10 else f"{scaled:.0f}"
-                if text.endswith(".0"):
-                    text = text[:-2]
-                return f"${text}M"
-            if value >= 1_000:
-                scaled = value / 1_000
-                text = f"{scaled:.1f}" if scaled < 10 else f"{scaled:.0f}"
-                if text.endswith(".0"):
-                    text = text[:-2]
-                return f"${text}k"
-            return f"${value:,.0f}"
+    def _humanize_amount(self, value: float) -> str:
+        """Convert a numeric amount into a compact human-readable string."""
+        if value >= 1_000_000:
+            scaled = value / 1_000_000
+            text = f"{scaled:.1f}" if scaled < 10 else f"{scaled:.0f}"
+            if text.endswith(".0"):
+                text = text[:-2]
+            return f"${text}M"
+        if value >= 1_000:
+            scaled = value / 1_000
+            text = f"{scaled:.1f}" if scaled < 10 else f"{scaled:.0f}"
+            if text.endswith(".0"):
+                text = text[:-2]
+            return f"${text}k"
+        return f"${value:,.0f}"
 
+    def _parse_amount_bounds(self, amount_str: str) -> Optional[Tuple[float, float]]:
+        """Parse an amount string into (min, max) bounds if possible."""
+        numbers = self._extract_amount_numbers(amount_str)
+        if not numbers:
+            return None
+        if '-' in amount_str and len(numbers) >= 2:
+            low, high = numbers[0], numbers[1]
+            return (min(low, high), max(low, high))
+        value = numbers[-1]
+        return (value, value)
+
+    def _format_amount(self, amount_str: str) -> str:
+        """Format amount string for display with a focus on the top-end of any disclosed range."""
+        numbers = self._extract_amount_numbers(amount_str)
         if numbers:
             max_val = max(numbers)
-            display = humanize(max_val)
+            display = self._humanize_amount(max_val)
             if len(numbers) >= 2:
                 return f"up to {display}"
             return display
 
-        return amount_str
+        return amount_str or "an undisclosed amount"
+
+    def _aggregate_amounts(self, trades: List[Dict]) -> Tuple[float, float, bool, bool, bool]:
+        """Return aggregated (min_sum, max_sum, has_range, has_numbers, has_undisclosed)."""
+        total_min = 0.0
+        total_max = 0.0
+        has_range = False
+        has_numbers = False
+        has_undisclosed = False
+
+        for trade in trades:
+            bounds = self._parse_amount_bounds(trade.get('amount', ''))
+            if not bounds:
+                has_undisclosed = True
+                continue
+
+            has_numbers = True
+            min_val, max_val = bounds
+            total_min += min_val
+            total_max += max_val
+            if max_val != min_val:
+                has_range = True
+
+        return total_min, total_max, has_range, has_numbers, has_undisclosed
+
+    def _format_bundle_amount(self, trades: List[Dict]) -> str:
+        """Summarize the aggregate amount across a bundle of trades."""
+        total_min, total_max, has_range, has_numbers, has_undisclosed = self._aggregate_amounts(trades)
+
+        if not has_numbers:
+            return "an undisclosed amount"
+
+        if has_undisclosed and total_min > 0:
+            return f"at least {self._humanize_amount(total_min)}"
+
+        if has_undisclosed and total_min <= 0:
+            return "an undisclosed amount"
+
+        if has_range:
+            return f"up to {self._humanize_amount(total_max)}"
+
+        return self._humanize_amount(total_max)
     
     def _generate_insight(self, trade: Dict) -> str:
         """Generate a brief insight about the trade."""
