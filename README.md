@@ -5,6 +5,8 @@ shareable updates. The project pulls data from the Financial Modeling Prep (FMP)
 SQLite database, emails a daily HTML digest, and crafts polished tweets (optionally with charts and performance stats) for
 social media distribution.
 
+Follow here: https://x.com/theinsidescope
+
 ## Highlights
 
 - **Automated trade ingestion** – Fetches the latest disclosures for both chambers via the FMP API and records only new
@@ -53,30 +55,30 @@ application automatically loads them via `python-dotenv`.
 
 ### Core data sources
 
-| Variable | Purpose |
-| --- | --- |
+| Variable      | Purpose                                                                                        |
+| ------------- | ---------------------------------------------------------------------------------------------- |
 | `FMP_API_KEY` | Financial Modeling Prep API key used for trade ingestion, performance stats, and price charts. |
 
 ### Email delivery
 
-| Variable | Purpose |
-| --- | --- |
-| `SMTP_HOST` | SMTP server hostname. |
-| `SMTP_PORT` | SMTP server port. |
-| `SMTP_USER` | SMTP username / from address. |
-| `SMTP_PASS` | SMTP password or app-specific password. |
+| Variable          | Purpose                                           |
+| ----------------- | ------------------------------------------------- |
+| `SMTP_HOST`       | SMTP server hostname.                             |
+| `SMTP_PORT`       | SMTP server port.                                 |
+| `SMTP_USER`       | SMTP username / from address.                     |
+| `SMTP_PASS`       | SMTP password or app-specific password.           |
 | `EMAIL_RECIPIENT` | Where the daily HTML summary should be delivered. |
 
 ### Twitter automation
 
-| Variable | Purpose |
-| --- | --- |
-| `TWITTER_API_KEY` | X (Twitter) API consumer key. |
-| `TWITTER_API_SECRET` | X (Twitter) API consumer secret. |
-| `TWITTER_ACCESS_TOKEN` | X (Twitter) access token for the posting account. |
-| `TWITTER_ACCESS_SECRET` | X (Twitter) access token secret. |
-| `TWITTER_ATTACH_CHART` | Optional (`true`/`false`). Toggle automatic price chart attachments (defaults to `true`). |
-| `TWITTER_STYLE` | Optional (`engaging` or `classic`). Selects the copywriting style for posts (defaults to `engaging`). |
+| Variable                | Purpose                                                                                               |
+| ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| `TWITTER_API_KEY`       | X (Twitter) API consumer key.                                                                         |
+| `TWITTER_API_SECRET`    | X (Twitter) API consumer secret.                                                                      |
+| `TWITTER_ACCESS_TOKEN`  | X (Twitter) access token for the posting account.                                                     |
+| `TWITTER_ACCESS_SECRET` | X (Twitter) access token secret.                                                                      |
+| `TWITTER_ATTACH_CHART`  | Optional (`true`/`false`). Toggle automatic price chart attachments (defaults to `true`).             |
+| `TWITTER_STYLE`         | Optional (`engaging` or `classic`). Selects the copywriting style for posts (defaults to `engaging`). |
 
 > Tip: When running in CI (GitHub Actions, cron, etc.) export these values as secrets so the workflow can authenticate without
 > exposing credentials.
