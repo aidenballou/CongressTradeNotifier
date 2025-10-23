@@ -2,29 +2,7 @@ from fmp_client import fetch_senate_trades, fetch_house_trades
 from db import conn, cursor
 import re
 
-def parse_amount(amount_str):
-    """Parse amount string like '$1,001 - $15,000' and return the average as float"""
-    if not amount_str or amount_str == "":
-        return 0.0
-    
-    # Remove $ and commas, split by dash
-    cleaned = amount_str.replace('$', '').replace(',', '')
-    parts = cleaned.split(' - ')
-    
-    if len(parts) == 2:
-        try:
-            min_val = float(parts[0].strip())
-            max_val = float(parts[1].strip())
-            return (min_val + max_val) / 2  # Return average
-        except ValueError:
-            return 0.0
-    elif len(parts) == 1:
-        try:
-            return float(parts[0].strip())
-        except ValueError:
-            return 0.0
-    else:
-        return 0.0
+from amounts import parse_amount
 
 def get_existing_keys():
     cursor.execute("SELECT ticker, transaction_date, disclosure_date, amount FROM trades")
