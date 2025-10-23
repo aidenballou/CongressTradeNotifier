@@ -5,7 +5,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from emailer import send_summary
-from insights import build_highlights_text, compute_trade_insights
+from insider import find_recent_insider_activity
+from insights import build_highlights_text, compute_trade_insights, summarize_insider_activity
 from notifier import run_delta
 from twitter_client import post_trades_to_twitter
 
@@ -24,9 +25,17 @@ def main():
     print(f"Found {len(trades_today)} trades disclosed today ({today})")
     
     if trades_today:
+        insider_activity = find_recent_insider_activity(trades_today)
         insights = compute_trade_insights(trades_today)
+        if insider_activity:
+            insights["related_insider_activity"] = insider_activity
         print("Daily highlights:")
         print(build_highlights_text(insights))
+
+        if insider_activity:
+            print("Related corporate insider activity:")
+            for line in summarize_insider_activity(insider_activity):
+                print(f"  - {line}")
 
         # Send email summary
         print("Sending email...")

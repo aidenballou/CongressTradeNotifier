@@ -1,6 +1,7 @@
 """Utility functions for extracting high-level insights from trade data."""
 
 from collections import Counter, defaultdict
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from amounts import parse_amount
@@ -120,6 +121,19 @@ def build_highlights_html(insights: Dict[str, Any]) -> str:
             f"<strong>Most popular ticker:</strong> {ticker_symbol} ({count} trade{'s' if count != 1 else ''}, ~{_format_currency(volume)})"
         )
 
+    insider_activity = insights.get("related_insider_activity") or {}
+    if insider_activity:
+        overlap_count = len(insider_activity)
+        detail_strings = summarize_insider_activity(insider_activity)
+        detail_suffix = f" {', '.join(detail_strings)}" if detail_strings else ""
+        highlights.append(
+            (
+                f"<strong>Insider overlap:</strong> {overlap_count} ticker"
+                f"{'s' if overlap_count != 1 else ''} also saw corporate insider trades"
+                f" in the last two weeks.{detail_suffix}"
+            )
+        )
+
     highlight_items = "".join(f"<li>{item}</li>" for item in highlights)
 
     return (
@@ -170,4 +184,103 @@ def build_highlights_text(insights: Dict[str, Any]) -> str:
             f"Most popular ticker: {ticker_symbol} ({count} trade{'s' if count != 1 else ''}, ~{_format_currency(volume)})"
         )
 
+    insider_activity = insights.get("related_insider_activity") or {}
+    if insider_activity:
+        overlap_count = len(insider_activity)
+        detail_strings = summarize_insider_activity(insider_activity)
+        detail_suffix = f" Details: {', '.join(detail_strings)}" if detail_strings else ""
+        lines.append(
+            (
+                f"Insider overlap: {overlap_count} ticker"
+                f"{'s' if overlap_count != 1 else ''} also saw corporate insider trades"
+                f" in the last two weeks.{detail_suffix}"
+            )
+        )
+
     return "\n".join(lines)
+
+
+def summarize_insider_activity(
+    insider_activity: Dict[str, List[Dict[str, Any]]],
+    *,
+    max_items: int = 3,
+) -> List[str]:
+    """Return short textual summaries of insider trades for highlight sections."""
+
+    def _parse_date(entry: Dict[str, Any]) -> Optional[datetime]:
+        for key in ("transactionDate", "filingDate", "date"):
+            value = entry.get(key)
+            if not value:
+                continue
+            try:
+                return datetime.strptime(value, "%Y-%m-%d")
+            except Exception:
+                continue
+        return None
+
+    def _format_shares(raw_value: Any) -> Optional[str]:
+        if raw_value in (None, ""):
+            return None
+        try:
+            shares = float(raw_value)
+        except (TypeError, ValueError):
+            return str(raw_value)
+        if shares >= 1_000_000:
+            return f"{shares / 1_000_000:.1f}M sh"
+        if shares >= 1_000:
+            return f"{shares / 1_000:.1f}K sh"
+        if shares.is_integer():
+            return f"{int(shares)} sh"
+        return f"{shares:.0f} sh"
+
+    def _format_price(raw_value: Any) -> Optional[str]:
+        if raw_value in (None, ""):
+            return None
+        try:
+            price = float(raw_value)
+        except (TypeError, ValueError):
+            return str(raw_value)
+        return f"${price:,.2f}"
+
+    entries: List[Tuple[datetime, str, Dict[str, Any]]] = []
+    for symbol, trades in insider_activity.items():
+        if not trades:
+            continue
+        # Choose the most recent trade per symbol for highlighting
+        latest_trade = max(trades, key=lambda item: _parse_date(item) or datetime.min)
+        entries.append((_parse_date(latest_trade) or datetime.min, symbol, latest_trade))
+
+    # Sort descending by date so the freshest intel appears first
+    entries.sort(key=lambda item: item[0], reverse=True)
+
+    summaries: List[str] = []
+    for _, symbol, trade in entries[:max_items]:
+        name = trade.get("insiderName") or trade.get("reportingName") or "Insider"
+        title = trade.get("insiderTitle") or trade.get("position") or trade.get("typeOfOwner")
+        action = trade.get("transactionType") or trade.get("type") or "trade"
+        date = trade.get("transactionDate") or trade.get("filingDate") or "recently"
+        shares = _format_shares(
+            trade.get("securitiesTransacted")
+            or trade.get("shares")
+            or trade.get("securities")
+            or trade.get("sharesTraded")
+        )
+        price = _format_price(trade.get("price") or trade.get("sharePrice"))
+
+        descriptor = name.strip()
+        if title:
+            descriptor = f"{descriptor} ({title})"
+
+        details: List[str] = [descriptor, action.strip(), date]
+        meta: List[str] = []
+        if shares:
+            meta.append(shares)
+        if price:
+            meta.append(price)
+
+        if meta:
+            details.append(f"[{', '.join(meta)}]")
+
+        summaries.append(f"{symbol}: {' '.join(details)}")
+
+    return summaries
