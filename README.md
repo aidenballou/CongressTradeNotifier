@@ -16,6 +16,7 @@ Follow here: https://x.com/theinsidescope
 - **Rich Twitter automation** – Generates engaging single- or multi-trade posts, applies heuristics for tone and hashtags, can
   attach price charts, and retries transient API failures. 【F:src/twitter_client.py†L38-L213】【F:src/twitter_client.py†L421-L658】【F:src/twitter_client.py†L1137-L1177】
 - **Email reporting** – Sends an HTML table that highlights each disclosure for the day, ready to drop into an inbox. 【F:src/emailer.py†L1-L81】
+- **Corporate insider context** – Cross-references FMP's latest insider filings to spotlight overlapping tickers directly in the daily highlights. 【F:src/insider.py†L1-L111】【F:src/emailer.py†L1-L142】【F:src/main.py†L1-L45】
 - **Developer tooling** – Includes a tweet preview script and pytest suite for validating copy, formatting, and Twitter client
   behavior. 【F:scripts/preview_tweet.py†L1-L138】【F:tests/test_twitter_client.py†L1-L150】
 

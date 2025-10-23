@@ -5,7 +5,7 @@ import smtplib
 from email.message import EmailMessage
 from typing import Any, Dict, Iterable, Optional, cast
 
-from insights import build_highlights_html, compute_trade_insights
+from insights import build_highlights_html, compute_trade_insights, summarize_insider_activity
 
 
 def send_summary(new_trades: Iterable[Dict[str, Any]], insights: Optional[Dict[str, Any]] = None) -> None:
@@ -21,6 +21,23 @@ def send_summary(new_trades: Iterable[Dict[str, Any]], insights: Optional[Dict[s
     if insights is None:
         insights = compute_trade_insights(new_trades)
     highlights_html = build_highlights_html(insights)
+
+    insider_section_html = ""
+    insider_activity = {}
+    if insights:
+        insider_activity = insights.get("related_insider_activity") or {}
+    if insider_activity:
+        insider_items = summarize_insider_activity(insider_activity, max_items=5)
+        if insider_items:
+            insider_list = "".join(f"<li>{item}</li>" for item in insider_items)
+            insider_section_html = f"""
+  <div class='insider-insights'>
+    <h3>Corporate Insider Context</h3>
+    <ul>
+      {insider_list}
+    </ul>
+  </div>
+"""
 
     # Check required environment variables
     smtp_host = os.getenv("SMTP_HOST")
@@ -65,6 +82,26 @@ def send_summary(new_trades: Iterable[Dict[str, Any]], insights: Optional[Dict[s
     .highlights li {{
       margin-bottom: 6px;
     }}
+    .insider-insights {{
+      background-color: #fff9f0;
+      border: 1px solid #f4d3a1;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-bottom: 18px;
+      line-height: 1.4;
+    }}
+    .insider-insights h3 {{
+      margin: 0 0 8px 0;
+      font-size: 16px;
+      color: #8c5404;
+    }}
+    .insider-insights ul {{
+      margin: 0;
+      padding-left: 20px;
+    }}
+    .insider-insights li {{
+      margin-bottom: 6px;
+    }}
     table {{ border-collapse: collapse; width: 100%; }}
     th, td {{ border: 1px solid #dddddd; text-align: left; padding: 8px; }}
     th {{ background-color: #f2f2f2; }}
@@ -75,6 +112,7 @@ def send_summary(new_trades: Iterable[Dict[str, Any]], insights: Optional[Dict[s
 <body>
   <h2>Daily Congressional Trades Summary</h2>
   {highlights_html}
+  {insider_section_html}
   <table>
     <tr>
       <th>Disclosure Date</th>
