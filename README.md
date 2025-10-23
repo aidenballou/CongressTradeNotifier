@@ -10,15 +10,15 @@ Follow here: https://x.com/theinsidescope
 ## Highlights
 
 - **Automated trade ingestion** – Fetches the latest disclosures for both chambers via the FMP API and records only new
-  transactions in `trades.sqlite3`. 【F:src/fmp_client.py†L10-L59】【F:src/notifier.py†L1-L45】【F:src/db.py†L1-L24】
+  transactions in `trades.sqlite3`.
 - **Daily operator workflow** – `src/main.py` coordinates the full pipeline: fetch trades, persist, email a same-day summary,
-  and publish tweets. 【F:src/main.py†L1-L39】
+  and publish tweets.
 - **Rich Twitter automation** – Generates engaging single- or multi-trade posts, applies heuristics for tone and hashtags, can
-  attach price charts, and retries transient API failures. 【F:src/twitter_client.py†L38-L213】【F:src/twitter_client.py†L421-L658】【F:src/twitter_client.py†L1137-L1177】
-- **Email reporting** – Sends an HTML table that highlights each disclosure for the day, ready to drop into an inbox. 【F:src/emailer.py†L1-L81】
-- **Corporate insider context** – Cross-references FMP's latest insider filings to spotlight overlapping tickers directly in the daily highlights. 【F:src/insider.py†L1-L111】【F:src/emailer.py†L1-L142】【F:src/main.py†L1-L45】
+  attach price charts, and retries transient API failures.
+- **Email reporting** – Sends an HTML table that highlights each disclosure for the day, ready to drop into an inbox.
+- **Corporate insider context** – Cross-references FMP's latest insider filings to spotlight overlapping tickers directly in the daily highlights.
 - **Developer tooling** – Includes a tweet preview script and pytest suite for validating copy, formatting, and Twitter client
-  behavior. 【F:scripts/preview_tweet.py†L1-L138】【F:tests/test_twitter_client.py†L1-L150】
+  behavior.
 
 ## Project structure
 
@@ -41,7 +41,7 @@ Follow here: https://x.com/theinsidescope
 
 - Python 3.9+
 - Dependencies listed in `requirements.txt` (`requests`, `python-dotenv`, `tweepy`, `matplotlib`, `pytest`, `pytest-mock`,
-  `yfinance`). 【F:requirements.txt†L1-L7】
+  `yfinance`).
 
 Install packages with:
 
@@ -115,13 +115,13 @@ python scripts/preview_tweet.py --from-db --post   # Post the preview to Twitter
 ```
 
 The preview respects your environment configuration (style, chart toggles, API credentials). Charts require `matplotlib` and
-will fall back to yfinance if FMP historical endpoints fail. 【F:scripts/preview_tweet.py†L79-L120】【F:src/twitter_client.py†L513-L658】
+will fall back to yfinance if FMP historical endpoints fail.
 
 ## Data storage
 
 - Trade history is stored in `trades.sqlite3` next to the source code. The schema enforces uniqueness on the combination of
-  ticker, disclosure date, transaction date, and amount to prevent duplicates. 【F:src/db.py†L1-L24】
-- Metadata such as last run timestamps can be added via the `metadata` table if needed for future automation. 【F:src/db.py†L16-L23】
+  ticker, disclosure date, transaction date, and amount to prevent duplicates.
+- Metadata such as last run timestamps can be added via the `metadata` table if needed for future automation.
 
 Back up the database if you plan to redeploy the notifier or analyze historical trades elsewhere.
 
@@ -134,7 +134,7 @@ pytest
 ```
 
 The suite mocks API clients to verify initialization, tweet formatting, hashtag selection, and error handling behavior without
-making network calls. 【F:tests/test_twitter_client.py†L1-L150】
+making network calls.
 
 ## Scheduling ideas
 
@@ -146,8 +146,8 @@ making network calls. 【F:tests/test_twitter_client.py†L1-L150】
 
 - Missing API keys or SMTP credentials cause the corresponding subsystem to skip its work while logging a helpful warning.
 - When the Twitter client encounters transient errors (rate limits, network hiccups) it retries with exponential backoff before
-  surfacing the failure. 【F:src/twitter_client.py†L921-L1012】
-- Chart generation requires both `matplotlib` and recent price data. If unavailable the tweet still posts without media. 【F:src/twitter_client.py†L505-L586】
+  surfacing the failure.
+- Chart generation requires both `matplotlib` and recent price data. If unavailable the tweet still posts without media.
 
 ---
 
