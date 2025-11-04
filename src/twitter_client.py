@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import time
 import logging
@@ -545,6 +546,63 @@ class TwitterClient:
         else:
             return "Market timing decision worth monitoring for trends." if action == "BUY" else "Divestment may signal portfolio rebalancing."
     
+    def _log_twitter_error(self, error: Exception, operation: str = "create_tweet") -> None:
+        """Log rich details from Tweepy/X API errors to aid debugging.
+
+        Attempts to print HTTP status, reason, selected response headers and the
+        JSON/text body. Avoids logging sensitive Authorization headers.
+        """
+        try:
+            resp = getattr(error, "response", None)
+            if resp is None:
+                logger.error(f"Twitter error during {operation}: {error}")
+                return
+
+            status = getattr(resp, "status_code", None)
+            reason = getattr(resp, "reason", "")
+            logger.error(f"Twitter error during {operation}: HTTP {status} {reason}")
+
+            # Log safe subset of headers
+            try:
+                headers = dict(getattr(resp, "headers", {}) or {})
+                for k in list(headers.keys()):
+                    if k and k.lower() in {"authorization", "proxy-authorization"}:
+                        headers.pop(k, None)
+                useful = {k: headers[k] for k in headers if k.lower() in {
+                    "x-rate-limit-limit", "x-rate-limit-remaining", "x-rate-limit-reset",
+                    "content-type", "x-response-time"
+                }}
+                if useful:
+                    logger.error(f"Response headers: {useful}")
+            except Exception:
+                pass
+
+            # Prefer JSON body; fallback to text
+            body_logged = False
+            try:
+                data = resp.json()
+                logger.error(f"Response JSON: {json.dumps(data, indent=2, sort_keys=True)}")
+                body_logged = True
+            except Exception:
+                try:
+                    text = getattr(resp, "text", None)
+                    if text:
+                        logger.error(f"Response text: {text[:2000]}")
+                        body_logged = True
+                except Exception:
+                    pass
+
+            # Tweepy may attach parsed API errors
+            api_errors = getattr(error, "api_errors", None)
+            if api_errors and not body_logged:
+                try:
+                    logger.error(f"API errors: {json.dumps(api_errors, indent=2, sort_keys=True)}")
+                except Exception:
+                    logger.error(f"API errors: {api_errors}")
+
+        except Exception as log_err:
+            logger.error(f"Failed to log twitter error details: {log_err}")
+
     def _get_sector_hashtag(self, asset_desc: str) -> Optional[str]:
         """Get relevant sector hashtag based on asset description."""
         asset_desc_lower = asset_desc.lower()
@@ -636,6 +694,8 @@ class TwitterClient:
             logger.info("Tweet posted successfully")
             
         except Exception as e:
+            if getattr(e, "response", None) is not None:
+                self._log_twitter_error(e, operation="post_trade_tweet")
             logger.error(f"Failed to post tweet for trade {trade.get('symbol', 'Unknown')}: {str(e)}")
             raise
     
@@ -662,6 +722,8 @@ class TwitterClient:
                 return
                 
             except tweepy.TooManyRequests as e:
+                # Log details before backing off
+                self._log_twitter_error(e, operation="create_tweet")
                 if attempt < max_retries:
                     # Exponential backoff: 2^attempt * 60 seconds
                     wait_time = (2 ** attempt) * 60
@@ -672,14 +734,17 @@ class TwitterClient:
                     raise
                     
             except tweepy.Forbidden as e:
-                logger.error(f"Twitter API forbidden error: {str(e)}")
+                self._log_twitter_error(e, operation="create_tweet")
                 raise
                 
             except tweepy.Unauthorized as e:
-                logger.error(f"Twitter API unauthorized error: {str(e)}")
+                self._log_twitter_error(e, operation="create_tweet")
                 raise
                 
             except Exception as e:
+                # If this came from HTTP, attempt rich logging
+                if getattr(e, "response", None) is not None:
+                    self._log_twitter_error(e, operation="create_tweet")
                 if attempt < max_retries:
                     wait_time = (2 ** attempt) * 30  # Shorter wait for general errors
                     logger.warning(f"General error: {str(e)}. Retrying in {wait_time} seconds")
