@@ -3,8 +3,8 @@ name: Daily Main Runner
 
 on:
   schedule:
-    # every day at 20:00 UTC → 4:00 PM EDT
-    - cron: "0 20 * * *"
+    # every day at 21:30 UTC → 4:30 PM ET
+    - cron: "30 21 * * *"
   workflow_dispatch:
 
 jobs:
