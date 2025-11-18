@@ -992,9 +992,27 @@ class TwitterClient:
                 zorder=2,
             )
 
-        # Title & time window metadata
+        # Title & time window metadata (figure-level to leave room for badges)
         window_label = f"{dates[0].strftime('%b %d')} – {dates[-1].strftime('%b %d, %Y')}"
-        ax.set_title(f"${symbol} • {window_label}", loc="left", fontsize=14, pad=18)
+        fig.text(
+            0.03,
+            0.98,
+            f"${symbol}",
+            ha="left",
+            va="top",
+            fontsize=15,
+            fontweight="semibold",
+            color="#0F172A",
+        )
+        fig.text(
+            0.03,
+            0.955,
+            window_label,
+            ha="left",
+            va="top",
+            fontsize=10.5,
+            color="#4B5563",
+        )
         ax.set_xlabel("")
         ax.set_ylabel("Price ($)", fontsize=10, color="#1F2937")
 
@@ -1133,7 +1151,7 @@ class TwitterClient:
         except Exception:
             pass
 
-        # Label last price bubble
+        # Label last price bubble (card should sit above secondary axis)
         last_x, last_y = dates[-1], closes[-1]
         ax.scatter(
             [last_x],
@@ -1148,21 +1166,34 @@ class TwitterClient:
             last_label = ax.annotate(
                 f"${last_y:.2f}",
                 xy=(last_x, last_y),
-                xytext=(12, 14),
+                xytext=(-16, 18),
                 textcoords="offset points",
-                fontsize=10,
-                color="#1F2937",
-                bbox=dict(boxstyle="round,pad=0.35", fc="#DBEAFE", ec="#93C5FD", lw=0.8, alpha=0.95),
+                fontsize=10.5,
+                color="#0F172A",
+                ha="right",
+                va="bottom",
+                bbox=dict(
+                    boxstyle="round,pad=0.4",
+                    fc="#FFFFFF",
+                    ec="#93C5FD",
+                    lw=1.0,
+                    alpha=1.0,
+                ),
+                zorder=8,
             )
-            last_label.set_path_effects([pe.withStroke(linewidth=2, foreground="#FFFFFF")])
+            last_label.set_path_effects([
+                pe.withStroke(linewidth=3, foreground="#FFFFFF"),
+                pe.SimplePatchShadow(offset=(0, -1), shadow_rgbFace="#93C5FD", alpha=0.4),
+            ])
+            last_label.set_clip_on(False)
         except Exception:
             pass
 
-        fig.tight_layout(rect=(0, 0.03, 1, 0.93))
+        fig.tight_layout(rect=(0, 0.03, 1, 0.88))
 
         # Draw metadata badges after layout to guarantee they do not collide with chart elements
-        y_cursor_left = 0.96
-        y_cursor_right = 0.96
+        y_cursor_left = 0.9
+        y_cursor_right = 0.9
         for badge in top_badges:
             align = badge.get("align", "left")
             x_pos = 0.03 if align == "left" else 0.97
