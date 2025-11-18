@@ -996,7 +996,7 @@ class TwitterClient:
         window_label = f"{dates[0].strftime('%b %d')} – {dates[-1].strftime('%b %d, %Y')}"
         fig.text(
             0.03,
-            0.98,
+            0.985,
             f"${symbol}",
             ha="left",
             va="top",
@@ -1006,7 +1006,7 @@ class TwitterClient:
         )
         fig.text(
             0.03,
-            0.955,
+            0.94,
             window_label,
             ha="left",
             va="top",
