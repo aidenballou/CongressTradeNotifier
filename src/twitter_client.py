@@ -1040,7 +1040,8 @@ class TwitterClient:
 
             ax_pct.yaxis.set_major_formatter(FuncFormatter(_pct_fmt))
 
-        # Performance + metadata callouts
+        # Build metadata badges to be drawn in figure space after layout so they never overlap the chart
+        top_badges: List[Dict] = []
         if change_pct is not None:
             perf_sign = "+" if change_pct >= 0 else ""
             perf_color = positive_color if change_pct >= 0 else accent
@@ -1052,57 +1053,45 @@ class TwitterClient:
                 perf_text = f"{perf_sign}{change_pct:.1f}% ({dollar_change})"
             else:
                 perf_text = f"{perf_sign}{change_pct:.1f}%"
-            ax.text(
-                0.01,
-                1.08,
-                perf_text,
-                transform=ax.transAxes,
-                ha="left",
-                va="bottom",
-                fontsize=12,
-                fontweight="semibold",
-                color=perf_color,
-                clip_on=False,
-            )
             reference_label = (
                 f"since {entry_date_label}" if transaction_date else f"from first close on {entry_date_label}"
             )
-            ax.text(
-                0.01,
-                1.045,
-                reference_label,
-                transform=ax.transAxes,
-                ha="left",
-                va="bottom",
-                fontsize=9.5,
-                color="#6B7280",
-                clip_on=False,
+            top_badges.append(
+                {
+                    "text": perf_text,
+                    "fontsize": 12,
+                    "fontweight": "semibold",
+                    "color": perf_color,
+                    "facecolor": "#F0FDF4" if change_pct >= 0 else "#FEF2F2",
+                    "edgecolor": "none",
+                    "spacing": 0.055,
+                }
+            )
+            top_badges.append(
+                {
+                    "text": reference_label,
+                    "fontsize": 9.5,
+                    "color": "#6B7280",
+                    "facecolor": "#FFFFFF",
+                    "edgecolor": "#E5E7EB",
+                    "spacing": 0.05,
+                }
             )
 
-        ax.text(
-            0.99,
-            1.08,
-            f"Last ${latest_price:.2f}",
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
-            fontsize=11,
-            fontweight="medium",
-            color="#1F2937",
-            clip_on=False,
+        top_badges.append(
+            {
+                "text": f"Last ${latest_price:.2f}",
+                "fontsize": 11,
+                "fontweight": "medium",
+                "color": "#111827",
+                "facecolor": "#E0F2FE",
+                "edgecolor": "#7DD3FC",
+                "align": "right",
+                "spacing": 0.06,
+            }
         )
 
-        ax.text(
-            0.01,
-            -0.18,
-            f"Data through {dates[-1].strftime('%b %d, %Y')} • Source: Financial Modeling Prep",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=8.5,
-            color="#9CA3AF",
-            clip_on=False,
-        )
+        bottom_caption = f"Data through {dates[-1].strftime('%b %d, %Y')} • Source: Financial Modeling Prep"
 
         # Mark transaction date if within range
         try:
@@ -1121,18 +1110,26 @@ class TwitterClient:
                             linewidth=1.1,
                             zorder=5,
                         )
-                        ax.annotate(
-                            "Trade",
-                            xy=(tx, tx_price),
-                            xytext=(10, -18),
-                            textcoords="offset points",
-                            fontsize=9,
-                            color="#FFFFFF",
-                            fontweight="medium",
-                            bbox=dict(boxstyle="round,pad=0.3", fc=accent, ec="none", alpha=0.92),
-                            arrowprops=dict(arrowstyle="->", color=accent, lw=0.8, alpha=0.7),
-                            zorder=6,
-                        )
+                    tx_numeric = mdates.date2num(tx)
+                    x_mid = (mdates.date2num(dates[-1]) + mdates.date2num(dates[0])) / 2
+                    offset_x = 12 if tx_numeric <= x_mid else -12
+                    offset_y = -18
+                    # If the trade happens very close to the latest price marker, push the label upward
+                    if abs(tx_numeric - mdates.date2num(dates[-1])) <= 1.5:
+                        offset_y = 18
+                    ax.annotate(
+                        "Trade",
+                        xy=(tx, tx_price),
+                        xytext=(offset_x, offset_y),
+                        textcoords="offset points",
+                        fontsize=9,
+                        color="#FFFFFF",
+                        fontweight="medium",
+                        ha="left" if offset_x > 0 else "right",
+                        bbox=dict(boxstyle="round,pad=0.3", fc=accent, ec="none", alpha=0.92),
+                        arrowprops=dict(arrowstyle="->", color=accent, lw=0.8, alpha=0.7),
+                        zorder=7,
+                    )
         except Exception:
             pass
 
@@ -1163,11 +1160,50 @@ class TwitterClient:
 
         fig.tight_layout(rect=(0, 0.03, 1, 0.93))
 
+        # Draw metadata badges after layout to guarantee they do not collide with chart elements
+        y_cursor_left = 0.96
+        y_cursor_right = 0.96
+        for badge in top_badges:
+            align = badge.get("align", "left")
+            x_pos = 0.03 if align == "left" else 0.97
+            y_cursor = y_cursor_left if align == "left" else y_cursor_right
+            fig.text(
+                x_pos,
+                y_cursor,
+                badge["text"],
+                ha=align,
+                va="top",
+                fontsize=badge.get("fontsize", 10),
+                fontweight=badge.get("fontweight"),
+                color=badge.get("color", "#111827"),
+                bbox=dict(
+                    boxstyle="round,pad=0.35",
+                    facecolor=badge.get("facecolor", "#FFFFFF"),
+                    edgecolor=badge.get("edgecolor", "none"),
+                    linewidth=0.8,
+                ),
+                zorder=10,
+            )
+            if align == "left":
+                y_cursor_left -= badge.get("spacing", 0.05)
+            else:
+                y_cursor_right -= badge.get("spacing", 0.05)
+
+        fig.text(
+            0.03,
+            0.03,
+            bottom_caption,
+            ha="left",
+            va="bottom",
+            fontsize=8.5,
+            color="#6B7280",
+        )
+
         # Subtle watermark
         try:
             fig.text(
-                0.99,
-                0.02,
+                0.97,
+                0.03,
                 "@theinsidescope",
                 ha="right",
                 va="bottom",
