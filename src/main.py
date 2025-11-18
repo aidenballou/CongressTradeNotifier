@@ -15,9 +15,6 @@ load_dotenv()
 
 def main():
     print("Starting main.py...")
-    print(f"SMTP_HOST: {os.getenv('SMTP_HOST')}")
-    print(f"FMP_API_KEY: {os.getenv('FMP_API_KEY')}")
-    print(f"TWITTER_API_KEY: {'***' if os.getenv('TWITTER_API_KEY') else 'Not set'}")
     
     new = run_delta()
     today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")

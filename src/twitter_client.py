@@ -4,6 +4,7 @@ import time
 import logging
 import tempfile
 from typing import Dict, Optional, List, Tuple
+
 import requests
 import tweepy
 from dotenv import load_dotenv
@@ -11,13 +12,16 @@ from datetime import datetime, timedelta
 
 # Lazy import for plotting to avoid heavy import when disabled
 try:
+    import numpy as np  # type: ignore
     import matplotlib  # type: ignore
     matplotlib.use("Agg")  # headless-safe backend for CI and servers
     import matplotlib.pyplot as plt  # type: ignore
     import matplotlib.dates as mdates  # type: ignore
-    from matplotlib.ticker import MaxNLocator  # type: ignore
+    from matplotlib.ticker import MaxNLocator, FuncFormatter  # type: ignore
     from matplotlib import rcParams  # type: ignore
     import matplotlib.patheffects as pe  # type: ignore
+    from matplotlib.colors import LinearSegmentedColormap  # type: ignore
+    from cycler import cycler
 
     # Professional font + palette defaults
     rcParams["font.family"] = "sans-serif"
@@ -28,6 +32,7 @@ try:
         "Arial",
         "DejaVu Sans",
     ]
+    rcParams["axes.prop_cycle"] = cycler(color=["#2563EB", "#F97316", "#10B981", "#8B5CF6"])
     rcParams["axes.titlesize"] = 13
     rcParams["axes.titleweight"] = "semibold"
     rcParams["axes.labelcolor"] = "#222222"
@@ -35,8 +40,12 @@ try:
     rcParams["axes.edgecolor"] = "#D1D5DB"
     rcParams["figure.facecolor"] = "#FFFFFF"
     rcParams["axes.facecolor"] = "#FFFFFF"
+    rcParams["xtick.color"] = "#4B5563"
+    rcParams["ytick.color"] = "#4B5563"
+    rcParams["axes.titlecolor"] = "#111827"
 except Exception:  # pragma: no cover - plot is optional
     plt = None
+    np = None
 
 # Load environment variables
 load_dotenv()
@@ -868,17 +877,67 @@ class TwitterClient:
         dates = [d for d, _ in series]
         closes = [c for _, c in series]
 
+        ymin, ymax = min(closes), max(closes)
+        pad = (ymax - ymin) * 0.08 if ymax > ymin else 1.0
+        latest_price = closes[-1]
+
+        entry_price: Optional[float]
+        entry_price = None
+        entry_date_label: Optional[str] = None
+        if transaction_date:
+            try:
+                entry_price, _ = self._get_close_on_or_after(symbol, transaction_date)
+            except Exception:
+                entry_price = None
+            try:
+                entry_date_label = datetime.strptime(transaction_date, "%Y-%m-%d").strftime("%b %d, %Y")
+            except Exception:
+                entry_date_label = None
+        if entry_price is None:
+            entry_price = closes[0]
+        if entry_date_label is None:
+            entry_date_label = dates[0].strftime("%b %d, %Y")
+
+        change_abs = None
+        change_pct = None
+        if entry_price and entry_price > 0:
+            change_abs = latest_price - entry_price
+            change_pct = (change_abs / entry_price) * 100.0
+
         # --- Styling choices ---
-        primary = "#0A84FF"       # modern blue
-        accent = "#FF4D4F"        # tx marker
-        ema_color = "#8AB4F8"     # softer blue for EMA
-        grid_alpha = 0.22
+        primary = "#1D4ED8"       # modern blue
+        accent = "#EF4444"        # trade marker
+        ema_color = "#60A5FA"     # softer overlay
+        positive_color = "#059669"
+        grid_color = "#CBD5F5"
 
         # Create plot (slightly wider, high DPI)
-        fig, ax = plt.subplots(figsize=(7.6, 4.1), dpi=280)
+        fig, ax = plt.subplots(figsize=(7.8, 4.3), dpi=320)
+        fig.patch.set_facecolor("#FFFFFF")
+        ax.set_facecolor("#F8FAFF")
+        ax.set_axisbelow(True)
 
-        # Light gradient-like background by subtle facecolor
-        ax.set_facecolor("#FAFBFF")
+        # Soft gradient background for depth
+        if np is not None:
+            try:
+                gradient = np.linspace(0, 1, 512)
+                gradient = np.vstack((gradient, gradient))
+                gradient_cmap = LinearSegmentedColormap.from_list("chart_bg", ["#FFFFFF", "#EEF2FF"])
+                ax.imshow(
+                    gradient,
+                    extent=[
+                        mdates.date2num(dates[0]),
+                        mdates.date2num(dates[-1]),
+                        ymin - pad * 8,
+                        ymax + pad * 8,
+                    ],
+                    aspect="auto",
+                    cmap=gradient_cmap,
+                    alpha=0.9,
+                    zorder=0,
+                )
+            except Exception:
+                pass
 
         # Price line with soft shadow and rounded caps
         line_main, = ax.plot(
@@ -891,122 +950,297 @@ class TwitterClient:
             zorder=3,
         )
         line_main.set_path_effects([
-            pe.SimpleLineShadow(offset=(0, -1), alpha=0.25, linewidth=3.6),
+            pe.SimpleLineShadow(offset=(0, -1.2), alpha=0.25, linewidth=3.6),
             pe.Normal(),
         ])
 
-        # Subtle area fill
-        ax.fill_between(dates, closes, min(closes), color=primary, alpha=0.08, zorder=1)
+        # Emphasize gain/loss relative to entry
+        baseline = np.full(len(closes), entry_price) if np is not None else [entry_price] * len(closes)
+        if np is not None:
+            closes_array = np.array(closes)
+            ax.fill_between(
+                dates,
+                closes,
+                baseline,
+                where=closes_array >= entry_price,
+                color=primary,
+                alpha=0.08,
+                zorder=1,
+            )
+            ax.fill_between(
+                dates,
+                closes,
+                baseline,
+                where=closes_array < entry_price,
+                color=accent,
+                alpha=0.05,
+                zorder=1,
+            )
+        else:
+            ax.fill_between(dates, closes, baseline, color=primary, alpha=0.08, zorder=1)
 
         # Optional 10-day EMA overlay for texture
         if len(closes) >= 10:
             ema_vals = self._ema(closes, 10)
-            ax.plot(dates, ema_vals, color=ema_color, linewidth=1.6, alpha=0.9, zorder=2)
+            ax.plot(
+                dates,
+                ema_vals,
+                color=ema_color,
+                linewidth=1.6,
+                alpha=0.95,
+                linestyle="-.",
+                zorder=2,
+            )
 
-        # Title minimal, medium weight
-        ax.set_title(f"${symbol} - Last 90 Days", fontsize=14, pad=10)
-
-        # Labels
+        # Title & time window metadata (figure-level to leave room for badges)
+        window_label = f"{dates[0].strftime('%b %d')} – {dates[-1].strftime('%b %d, %Y')}"
+        fig.text(
+            0.03,
+            0.985,
+            f"${symbol}",
+            ha="left",
+            va="top",
+            fontsize=15,
+            fontweight="semibold",
+            color="#0F172A",
+        )
+        fig.text(
+            0.03,
+            0.94,
+            window_label,
+            ha="left",
+            va="top",
+            fontsize=10.5,
+            color="#4B5563",
+        )
         ax.set_xlabel("")
-        ax.set_ylabel("Price ($)", fontsize=10)
+        ax.set_ylabel("Price ($)", fontsize=10, color="#1F2937")
 
         # Clean spines and lightweight grid on Y only
         for spine in ["top", "right"]:
             ax.spines[spine].set_visible(False)
-        ax.spines["left"].set_alpha(0.45)
-        ax.spines["bottom"].set_alpha(0.45)
-        ax.grid(True, which="major", axis="y", linestyle=":", alpha=grid_alpha)
+        ax.spines["left"].set_alpha(0.35)
+        ax.spines["bottom"].set_alpha(0.35)
+        ax.grid(True, which="major", axis="y", linestyle=(0, (5, 6)), color=grid_color, alpha=0.55)
         ax.grid(False, axis="x")
 
         # Nice y-lims with padding
-        ymin, ymax = min(closes), max(closes)
-        pad = (ymax - ymin) * 0.06 if ymax > ymin else 1
         ax.set_ylim(ymin - pad, ymax + pad)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
+
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:,.2f}" if abs(v) < 100 else f"${v:,.0f}"))
 
         # Date formatting: month + day only, limited ticks to avoid overlap
         locator = mdates.AutoDateLocator(minticks=4, maxticks=6)
         formatter = mdates.DateFormatter("%b %d")  # e.g., Aug 01
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(formatter)
-        ax.tick_params(axis="x", labelsize=10)
-        ax.tick_params(axis="y", labelsize=10)
+        ax.tick_params(axis="x", labelsize=10, pad=4, length=0)
+        ax.tick_params(axis="y", labelsize=10, pad=6, length=0)
+        ax.margins(x=0)
 
         # Secondary Y axis: % change vs base (entry price if available, else first close)
-        pct_base = None
-        if transaction_date:
-            try:
-                entry_price, _ = self._get_close_on_or_after(symbol, transaction_date)
-                if entry_price:
-                    pct_base = entry_price
-            except Exception:
-                pct_base = None
-        if pct_base is None:
-            pct_base = closes[0]
+        pct_base = entry_price if entry_price and entry_price > 0 else closes[0]
         if pct_base and pct_base > 0:
-            # Map current y-limits to percent range
             pct_min = (ax.get_ylim()[0] - pct_base) / pct_base * 100.0
             pct_max = (ax.get_ylim()[1] - pct_base) / pct_base * 100.0
             ax_pct = ax.twinx()
             ax_pct.set_ylim(pct_min, pct_max)
-            ax_pct.tick_params(axis="y", labelsize=9, colors="#6B7280")
+            ax_pct.tick_params(axis="y", labelsize=9, colors="#6B7280", length=0, pad=5)
             ax_pct.spines["top"].set_visible(False)
-            ax_pct.spines["right"].set_alpha(0.35)
+            ax_pct.spines["right"].set_alpha(0.25)
             ax_pct.grid(False)
-            ax_pct.set_ylabel("%", fontsize=9, color="#6B7280")
-            def _pct_fmt(v, pos):
+            ax_pct.set_ylabel("% change", fontsize=9, color="#6B7280")
+
+            def _pct_fmt(v, _pos):
                 sign = "+" if v >= 0 else ""
                 return f"{sign}{v:.0f}%"
-            from matplotlib.ticker import FuncFormatter  # local import to avoid global if not available
+
             ax_pct.yaxis.set_major_formatter(FuncFormatter(_pct_fmt))
+
+        # Build metadata badges to be drawn in figure space after layout so they never overlap the chart
+        top_badges: List[Dict] = []
+        if change_pct is not None:
+            perf_sign = "+" if change_pct >= 0 else ""
+            perf_color = positive_color if change_pct >= 0 else accent
+            if change_abs is not None:
+                dollar_sign = "+" if change_abs >= 0 else "-"
+                if abs(change_abs) < 0.005:
+                    dollar_sign = ""
+                dollar_change = f"{dollar_sign}${abs(change_abs):.2f}" if dollar_sign else "$0.00"
+                perf_text = f"{perf_sign}{change_pct:.1f}% ({dollar_change})"
+            else:
+                perf_text = f"{perf_sign}{change_pct:.1f}%"
+            reference_label = (
+                f"since {entry_date_label}" if transaction_date else f"from first close on {entry_date_label}"
+            )
+            top_badges.append(
+                {
+                    "text": perf_text,
+                    "fontsize": 12,
+                    "fontweight": "semibold",
+                    "color": perf_color,
+                    "facecolor": "#F0FDF4" if change_pct >= 0 else "#FEF2F2",
+                    "edgecolor": "none",
+                    "spacing": 0.055,
+                }
+            )
+            top_badges.append(
+                {
+                    "text": reference_label,
+                    "fontsize": 9.5,
+                    "color": "#6B7280",
+                    "facecolor": "#FFFFFF",
+                    "edgecolor": "#E5E7EB",
+                    "spacing": 0.05,
+                }
+            )
+
+        top_badges.append(
+            {
+                "text": f"Last ${latest_price:.2f}",
+                "fontsize": 11,
+                "fontweight": "medium",
+                "color": "#111827",
+                "facecolor": "#E0F2FE",
+                "edgecolor": "#7DD3FC",
+                "align": "right",
+                "spacing": 0.06,
+            }
+        )
+
+        bottom_caption = f"Data through {dates[-1].strftime('%b %d, %Y')} • Source: Financial Modeling Prep"
 
         # Mark transaction date if within range
         try:
             if transaction_date:
                 tx = datetime.strptime(transaction_date, "%Y-%m-%d")
                 if dates[0] <= tx <= dates[-1]:
-                    ax.axvline(tx, color=accent, linestyle=(0, (6, 4)), linewidth=1.5, alpha=0.9)
+                    tx_price = entry_price if entry_price else closes[0]
+                    ax.axvline(tx, color=accent, linestyle=(0, (5, 6)), linewidth=1.4, alpha=0.75)
+                    if tx_price:
+                        ax.scatter(
+                            [tx],
+                            [tx_price],
+                            s=64,
+                            color=accent,
+                            edgecolors="#FFFFFF",
+                            linewidth=1.1,
+                            zorder=5,
+                        )
+                    tx_numeric = mdates.date2num(tx)
+                    x_mid = (mdates.date2num(dates[-1]) + mdates.date2num(dates[0])) / 2
+                    offset_x = 12 if tx_numeric <= x_mid else -12
+                    offset_y = -18
+                    # If the trade happens very close to the latest price marker, push the label upward
+                    if abs(tx_numeric - mdates.date2num(dates[-1])) <= 1.5:
+                        offset_y = 18
                     ax.annotate(
-                        "Tx",
-                        xy=(tx, ymax + pad * 0.1),
-                        xytext=(4, -8),
+                        "Trade",
+                        xy=(tx, tx_price),
+                        xytext=(offset_x, offset_y),
                         textcoords="offset points",
-                        color=accent,
-                        fontsize=10,
-                        ha="left",
-                        va="top",
+                        fontsize=9,
+                        color="#FFFFFF",
+                        fontweight="medium",
+                        ha="left" if offset_x > 0 else "right",
+                        bbox=dict(boxstyle="round,pad=0.3", fc=accent, ec="none", alpha=0.92),
+                        arrowprops=dict(arrowstyle="->", color=accent, lw=0.8, alpha=0.7),
+                        zorder=7,
                     )
         except Exception:
             pass
-        # Label last price bubble
+
+        # Label last price bubble (card should sit above secondary axis)
         last_x, last_y = dates[-1], closes[-1]
-        ax.scatter([last_x], [last_y], s=24, color=primary, zorder=4)
+        ax.scatter(
+            [last_x],
+            [last_y],
+            s=72,
+            color=primary,
+            edgecolors="#FFFFFF",
+            linewidth=1.0,
+            zorder=5,
+        )
         try:
-            ax.annotate(
+            last_label = ax.annotate(
                 f"${last_y:.2f}",
                 xy=(last_x, last_y),
-                xytext=(8, 10),
+                xytext=(-16, 18),
                 textcoords="offset points",
-                fontsize=9,
-                color="#111827",
-                bbox=dict(boxstyle="round,pad=0.3", fc="#E5F0FF", ec="#93C5FD", lw=0.8, alpha=0.9),
+                fontsize=10.5,
+                color="#0F172A",
+                ha="right",
+                va="bottom",
+                bbox=dict(
+                    boxstyle="round,pad=0.4",
+                    fc="#FFFFFF",
+                    ec="#93C5FD",
+                    lw=1.0,
+                    alpha=1.0,
+                ),
+                zorder=8,
             )
+            last_label.set_path_effects([
+                pe.withStroke(linewidth=3, foreground="#FFFFFF"),
+                pe.SimplePatchShadow(offset=(0, -1), shadow_rgbFace="#93C5FD", alpha=0.4),
+            ])
+            last_label.set_clip_on(False)
         except Exception:
             pass
 
-        fig.tight_layout()
+        fig.tight_layout(rect=(0, 0.03, 1, 0.88))
+
+        # Draw metadata badges after layout to guarantee they do not collide with chart elements
+        y_cursor_left = 0.9
+        y_cursor_right = 0.9
+        for badge in top_badges:
+            align = badge.get("align", "left")
+            x_pos = 0.03 if align == "left" else 0.97
+            y_cursor = y_cursor_left if align == "left" else y_cursor_right
+            fig.text(
+                x_pos,
+                y_cursor,
+                badge["text"],
+                ha=align,
+                va="top",
+                fontsize=badge.get("fontsize", 10),
+                fontweight=badge.get("fontweight"),
+                color=badge.get("color", "#111827"),
+                bbox=dict(
+                    boxstyle="round,pad=0.35",
+                    facecolor=badge.get("facecolor", "#FFFFFF"),
+                    edgecolor=badge.get("edgecolor", "none"),
+                    linewidth=0.8,
+                ),
+                zorder=10,
+            )
+            if align == "left":
+                y_cursor_left -= badge.get("spacing", 0.05)
+            else:
+                y_cursor_right -= badge.get("spacing", 0.05)
+
+        fig.text(
+            0.03,
+            0.03,
+            bottom_caption,
+            ha="left",
+            va="bottom",
+            fontsize=8.5,
+            color="#6B7280",
+        )
 
         # Subtle watermark
         try:
             fig.text(
-                0.99,
-                0.02,
-                "theinsidescope",
+                0.97,
+                0.03,
+                "@theinsidescope",
                 ha="right",
                 va="bottom",
                 fontsize=9,
                 color="#6B7280",
-                alpha=0.7,
+                alpha=0.65,
             )
         except Exception:
             pass
