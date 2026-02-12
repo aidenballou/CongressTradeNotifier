@@ -77,4 +77,8 @@ cursor.execute("""
   CREATE INDEX IF NOT EXISTS idx_posted_content_date
   ON posted_content_log(date);
 """)
+cursor.execute("""
+  CREATE INDEX IF NOT EXISTS idx_posted_content_alert_bundle
+  ON posted_content_log(content_type, bundle_id);
+""")
 conn.commit()

@@ -92,17 +92,17 @@ def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], t
 
 
 def _select_for_midday(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
-    """MIDDAY window: 2nd highest bundle ONLY if score >= threshold. Otherwise nothing."""
+    """MIDDAY window: highest remaining unposted bundle only if score >= threshold."""
     
     # Check if window already posted
     if has_window_posted_today(today, "MIDDAY"):
         return None
 
-    if len(scored_bundles) >= 2 and threshold is not None:
-        bundle, signal, score = scored_bundles[1]  # 2nd highest
+    if scored_bundles and threshold is not None:
+        bundle, signal, score = scored_bundles[0]  # Highest remaining after unposted filter
         bid = bundle_id(bundle)
         if score >= threshold and not has_been_posted("ALERT", bid, today, "MIDDAY"):
-            return ContentDecision("ALERT", bid, score, "second_highest_bundle")
+            return ContentDecision("ALERT", bid, score, "highest_remaining_bundle")
 
     return None
 

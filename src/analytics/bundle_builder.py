@@ -157,14 +157,16 @@ def filter_unposted(bundles: List[Dict[str, Any]], date: str) -> List[Dict[str, 
     if not bundles:
         return []
 
-    # Get all posted bundle_ids for this date
+    # Keep `date` for caller compatibility; ALERT dedupe must be cross-day.
+    _ = date
+
+    # Get all posted ALERT bundle_ids across all dates.
     cursor.execute(
         """
         SELECT DISTINCT bundle_id
         FROM posted_content_log
-        WHERE date = ? AND content_type = 'ALERT' AND bundle_id IS NOT NULL
-        """,
-        (date,),
+        WHERE content_type = 'ALERT' AND bundle_id IS NOT NULL
+        """
     )
     posted_bundle_ids = {row[0] for row in cursor.fetchall()}
 
