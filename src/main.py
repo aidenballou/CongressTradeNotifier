@@ -1,12 +1,8 @@
-from collections import defaultdict
-from datetime import datetime, timedelta
-import os
+from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 
-from db import cursor
 from emailer import send_summary
 from insider import find_recent_insider_activity
 from insights import build_highlights_text, compute_trade_insights
@@ -17,44 +13,6 @@ from scheduler.select_content import run_scheduler
 load_dotenv()
 
 ET = ZoneInfo("America/New_York")
-
-
-def _bundle_filings(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Bundle trades into filing-like units keyed by member + disclosure date."""
-
-    grouped: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
-    for trade in trades:
-        key = (
-            str(trade.get("firstName", "")).strip(),
-            str(trade.get("lastName", "")).strip(),
-            str(trade.get("disclosureDate", "")).strip(),
-        )
-        grouped[key].append(trade)
-
-    filings: List[Dict[str, Any]] = []
-    for (first, last, disclosure_date), filing_trades in grouped.items():
-        filing_trades = sorted(
-            filing_trades,
-            key=lambda item: str(item.get("transactionDate") or item.get("disclosureDate") or ""),
-        )
-        primary = filing_trades[0]
-        filings.append(
-            {
-                "firstName": first,
-                "lastName": last,
-                "member_name": f"{first} {last}".strip(),
-                "disclosureDate": disclosure_date,
-                "transactionDate": primary.get("transactionDate") or disclosure_date,
-                "source": primary.get("source"),
-                "trades": filing_trades,
-            }
-        )
-
-    return filings
-
-
-
-
 def main():
     print("Starting main.py...")
 

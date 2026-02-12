@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict
 
 import requests
@@ -12,6 +13,15 @@ import requests
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 MAX_FIELD_LEN = 240
 BANNED_WORDS = {"disclosed"}
+UNCERTAINTY_PATTERNS = (
+    r"\bcould\b",
+    r"\bmay\b",
+    r"\bmight\b",
+    r"\bif\b",
+    r"\bunclear\b",
+    r"\bnot guaranteed\b",
+    r"\brisk(?:s|y)?\b",
+)
 
 
 def _extract_trades(filing: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -43,7 +53,7 @@ def _sanitize_field(text: str) -> str:
 
 def _has_uncertainty(text: str) -> bool:
     lowered = (text or "").lower()
-    return any(token in lowered for token in ["could", "may", "might", "if", "unclear", "not guaranteed", "risk"])
+    return any(re.search(pattern, lowered) for pattern in UNCERTAINTY_PATTERNS)
 
 
 def _enforce_contract(payload: Dict[str, str]) -> Dict[str, str]:

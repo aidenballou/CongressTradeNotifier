@@ -116,9 +116,9 @@ def _select_for_power_hour(scored_bundles: List[tuple], threshold: Optional[int]
 
     posts_today = count_posts_today(today)
     if posts_today == 0:
-        # Must post Daily Tape
+        # Must post Daily Tape only when filings exist today.
         tape = build_daily_tape(now_et)
-        if not has_daily_tape_today(today):
+        if tape.get("total_filings", 0) > 0 and not has_daily_tape_today(today):
             return ContentDecision("DAILY_TAPE", None, None, "mandatory_first_post")
 
     return None
