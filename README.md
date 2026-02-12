@@ -136,6 +136,14 @@ pytest
 The suite mocks API clients to verify initialization, tweet formatting, hashtag selection, and error handling behavior without
 making network calls.
 
+## Verification before production
+
+Before re-enabling or increasing workflow frequency, confirm:
+
+1. **Test suite** – `pytest tests/` (exclude `test_x_api_live.py` if no Twitter env). All tests should pass.
+2. **Dedupe idempotency** – Run `python src/main.py` twice with no new disclosures in between; the second run should log `inserted=0` in the Delta line (re-running with unchanged data yields no new rows). For scheduled runs, the workflow restores `trades.sqlite3` from the previous run’s artifact, so two consecutive workflow runs (e.g. via **Actions → Daily Main Runner → Run workflow** twice) should also show `inserted=0` on the second run when there are no new filings.
+3. **Queue key stability** – Same filing payload must produce the same queue key across runs (tests in `test_posting_strategy.py` assert this).
+
 ## Scheduling ideas
 
 - **Cron job** – Run `python src/main.py` daily after markets close to capture fresh filings.

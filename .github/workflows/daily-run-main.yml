@@ -3,9 +3,13 @@ name: Daily Main Runner
 
 on:
   schedule:
-    # every day at 21:30 UTC → 4:30 PM ET
-    - cron: "30 21 * * *"
+    # every 15 minutes to support queue draining and morning release windows
+    - cron: "*/15 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: insiders-main-workflow
+  cancel-in-progress: false
 
 jobs:
   run-main:
@@ -24,6 +28,20 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      - name: Get previous successful run ID
+        id: get-prev-run
+        run: |
+          PREV=$(gh run list --workflow=daily-run-main.yml --limit 10 --json databaseId,status,conclusion --jq '.[] | select(.status == "completed" and .conclusion == "success" and .databaseId != '"${{ github.run_id }}"') | .databaseId' | head -1)
+          echo "run_id=$PREV" >> $GITHUB_OUTPUT
+
+      - name: Restore trades database from previous run
+        if: steps.get-prev-run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: trades-db
+          run-id: ${{ steps.get-prev-run.outputs.run_id }}
+        continue-on-error: true
+
       - name: Run main.py
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -36,4 +54,13 @@ jobs:
           TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
           TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
           TWITTER_ACCESS_SECRET: ${{ secrets.TWITTER_ACCESS_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python src/main.py
+
+      - name: Upload trades database artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trades-db
+          path: trades.sqlite3
+          retention-days: 90

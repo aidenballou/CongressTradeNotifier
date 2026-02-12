@@ -15,9 +15,10 @@ load_dotenv()
 
 API_KEY = os.getenv("FMP_API_KEY")
 BASE_URL = "https://financialmodelingprep.com"
+PLAN_MAX_INSIDER_LIMIT = int(os.getenv("FMP_INSIDER_LIMIT_MAX", "100"))
 
 
-def fetch_latest_insider_trades(limit: int = 250) -> List[Dict[str, Any]]:
+def fetch_latest_insider_trades(limit: int = 100) -> List[Dict[str, Any]]:
     """Fetch the latest corporate insider trading disclosures from FMP.
 
     Parameters
@@ -32,7 +33,8 @@ def fetch_latest_insider_trades(limit: int = 250) -> List[Dict[str, Any]]:
         print("[Insider] Skipping fetch_latest_insider_trades: FMP_API_KEY is not set")
         return []
 
-    url = f"{BASE_URL}/stable/insider-trading/latest?page=0&limit={limit}&apikey={API_KEY}"
+    capped_limit = max(1, min(int(limit), PLAN_MAX_INSIDER_LIMIT))
+    url = f"{BASE_URL}/stable/insider-trading/latest?page=0&limit={capped_limit}&apikey={API_KEY}"
     try:
         response = requests.get(url, timeout=15)
     except Exception as exc:  # pragma: no cover - defensive logging only
@@ -40,6 +42,21 @@ def fetch_latest_insider_trades(limit: int = 250) -> List[Dict[str, Any]]:
         return []
 
     if response.status_code != 200:
+        # Gracefully recover for common plan-limit mismatch errors.
+        if response.status_code == 402 and capped_limit != PLAN_MAX_INSIDER_LIMIT:
+            fallback_url = (
+                f"{BASE_URL}/stable/insider-trading/latest"
+                f"?page=0&limit={PLAN_MAX_INSIDER_LIMIT}&apikey={API_KEY}"
+            )
+            try:
+                fallback = requests.get(fallback_url, timeout=15)
+                if fallback.status_code == 200:
+                    payload = fallback.json()
+                    if isinstance(payload, list):
+                        print(f"[Insider] Retried with limit={PLAN_MAX_INSIDER_LIMIT} after plan-limit response")
+                        return payload
+            except Exception:
+                pass
         print(
             "[Insider] Unexpected status code",
             response.status_code,
@@ -64,7 +81,7 @@ def find_recent_insider_activity(
     trades: Iterable[Mapping[str, Any]],
     *,
     lookback_days: int = 14,
-    insider_limit: int = 500,
+    insider_limit: int = 100,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Return insider trading activity that overlaps the provided trades.
 

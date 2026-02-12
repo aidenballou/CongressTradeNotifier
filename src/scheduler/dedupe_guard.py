@@ -1,0 +1,72 @@
+"""Idempotent posting guard via posted_content_log table."""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime
+from typing import Optional
+
+try:
+    from db import conn, cursor
+except ImportError:  # pragma: no cover
+    from src.db import conn, cursor
+
+
+def _content_hash(content_type: str, bundle_id: Optional[str], date: str, window: str) -> str:
+    """Generate deterministic hash for content posting."""
+    payload = f"{content_type}|{bundle_id or ''}|{date}|{window}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def has_been_posted(content_type: str, bundle_id: Optional[str], date: str, window: str) -> bool:
+    """Check if this exact content has already been posted."""
+    content_hash = _content_hash(content_type, bundle_id, date, window)
+    cursor.execute(
+        "SELECT 1 FROM posted_content_log WHERE hash = ? LIMIT 1",
+        (content_hash,),
+    )
+    return cursor.fetchone() is not None
+
+
+def record_post(content_type: str, bundle_id: Optional[str], date: str, window: str, now_et: datetime) -> None:
+    """Record a successful post in the log."""
+    content_hash = _content_hash(content_type, bundle_id, date, window)
+    created_at = now_et.astimezone().isoformat()
+
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO posted_content_log
+        (content_type, bundle_id, date, window, hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (content_type, bundle_id, date, window, content_hash, created_at),
+    )
+    conn.commit()
+
+
+def count_posts_today(date: str) -> int:
+    """Count total posts for a given date."""
+    cursor.execute(
+        "SELECT COUNT(*) FROM posted_content_log WHERE date = ?",
+        (date,),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+
+def has_daily_tape_today(date: str) -> bool:
+    """Check if daily tape was posted today."""
+    cursor.execute(
+        "SELECT 1 FROM posted_content_log WHERE date = ? AND content_type = 'DAILY_TAPE' LIMIT 1",
+        (date,),
+    )
+    return cursor.fetchone() is not None
+
+
+def has_window_posted_today(date: str, window: str) -> bool:
+    """Check if this window has already posted something today."""
+    cursor.execute(
+        "SELECT 1 FROM posted_content_log WHERE date = ? AND window = ? LIMIT 1",
+        (date, window),
+    )
+    return cursor.fetchone() is not None

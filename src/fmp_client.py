@@ -75,7 +75,7 @@ def fetch_house_trades():
         return []
 
 def main():
-    new = run_delta()
+    new, _ = run_delta()
     today = datetime.utcnow().strftime("%Y-%m-%d")
     # Only keep trades disclosed today
     trades_today = [t for t in new if t.get("disclosureDate") == today]

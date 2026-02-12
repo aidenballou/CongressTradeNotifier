@@ -1,0 +1,278 @@
+"""Main scheduler orchestrator for content selection and posting."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+try:
+    from analytics.bundle_builder import build_bundles_from_db, bundle_id, filter_unposted, fetch_recent_trades
+    from analytics.rollups import build_daily_tape, build_seven_day_theme, build_member_spotlight
+    from scheduler.evaluate_window import get_current_window, is_trading_day
+    from scheduler.dynamic_threshold import compute_threshold
+    from scheduler.dedupe_guard import (
+        has_been_posted,
+        record_post,
+        count_posts_today,
+        has_daily_tape_today,
+        has_window_posted_today,
+    )
+    from trade_analyzer import analyze_filing
+    from historical_context import build_historical_context
+    from insight_generator import generate_insight
+    from tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
+    from posting_strategy import post_thread_directly
+except ImportError:  # pragma: no cover
+    from src.analytics.bundle_builder import build_bundles_from_db, bundle_id, filter_unposted, fetch_recent_trades
+    from src.analytics.rollups import build_daily_tape, build_seven_day_theme, build_member_spotlight
+    from src.scheduler.evaluate_window import get_current_window, is_trading_day
+    from src.scheduler.dynamic_threshold import compute_threshold
+    from src.scheduler.dedupe_guard import (
+        has_been_posted,
+        record_post,
+        count_posts_today,
+        has_daily_tape_today,
+        has_window_posted_today,
+    )
+    from src.trade_analyzer import analyze_filing
+    from src.historical_context import build_historical_context
+    from src.insight_generator import generate_insight
+    from src.tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
+    from src.posting_strategy import post_thread_directly
+
+
+@dataclass
+class ContentDecision:
+    """Represents a decision to post specific content."""
+    content_type: str  # ALERT, DAILY_TAPE, SEVEN_DAY_THEME, MEMBER_SPOTLIGHT
+    bundle_id: Optional[str]
+    score: Optional[int]
+    reason: str
+
+
+def _score_and_rank_bundles(bundles: List[Dict[str, Any]], recent_trades: List[Dict[str, Any]], now_et: datetime) -> List[tuple[Dict[str, Any], Dict[str, Any], int]]:
+    """Score bundles and return sorted list of (bundle, signal, score) tuples."""
+    scored = []
+    for bundle in bundles:
+        signal = analyze_filing(bundle, recent_trades, now_et)
+        score = signal.get("diagnostics", {}).get("score", 0)
+        scored.append((bundle, signal, score))
+    # Sort by score descending
+    scored.sort(key=lambda x: x[2], reverse=True)
+    return scored
+
+
+def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
+    """MORNING window: Alert > Daily Tape > 7-day Theme. Never both alert and tape."""
+    
+    # Check if window already posted
+    if has_window_posted_today(today, "MORNING"):
+        return None
+
+    # Try highest scoring bundle if meets threshold
+    if scored_bundles and threshold is not None:
+        bundle, signal, score = scored_bundles[0]
+        bid = bundle_id(bundle)
+        if score >= threshold and not has_been_posted("ALERT", bid, today, "MORNING"):
+            return ContentDecision("ALERT", bid, score, "highest_scoring_bundle")
+
+    # Try Daily Tape
+    if not has_daily_tape_today(today):
+        tape = build_daily_tape(now_et)
+        if tape.get("total_filings", 0) > 0:
+            return ContentDecision("DAILY_TAPE", None, None, "daily_tape_fallback")
+
+    # Fallback to 7-day Theme
+    theme = build_seven_day_theme(now_et)
+    if theme.get("top_5_tickers_by_value"):
+        return ContentDecision("SEVEN_DAY_THEME", None, None, "seven_day_theme_fallback")
+
+    return None
+
+
+def _select_for_midday(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
+    """MIDDAY window: 2nd highest bundle ONLY if score >= threshold. Otherwise nothing."""
+    
+    # Check if window already posted
+    if has_window_posted_today(today, "MIDDAY"):
+        return None
+
+    if len(scored_bundles) >= 2 and threshold is not None:
+        bundle, signal, score = scored_bundles[1]  # 2nd highest
+        bid = bundle_id(bundle)
+        if score >= threshold and not has_been_posted("ALERT", bid, today, "MIDDAY"):
+            return ContentDecision("ALERT", bid, score, "second_highest_bundle")
+
+    return None
+
+
+def _select_for_power_hour(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
+    """POWER_HOUR window: Mandatory Daily Tape if no posts today yet. Otherwise nothing."""
+    
+    # Check if window already posted
+    if has_window_posted_today(today, "POWER_HOUR"):
+        return None
+
+    posts_today = count_posts_today(today)
+    if posts_today == 0:
+        # Must post Daily Tape
+        tape = build_daily_tape(now_et)
+        if not has_daily_tape_today(today):
+            return ContentDecision("DAILY_TAPE", None, None, "mandatory_first_post")
+
+    return None
+
+
+def _select_for_evening(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
+    """EVENING window: If filings today == 0 → 7-day Theme, else → Member Spotlight."""
+    
+    # Check if window already posted
+    if has_window_posted_today(today, "EVENING"):
+        return None
+
+    # Count filings today
+    tape = build_daily_tape(now_et)
+    filings_today = tape.get("total_filings", 0)
+
+    if filings_today == 0:
+        # 7-day Theme
+        theme = build_seven_day_theme(now_et)
+        if theme.get("top_5_tickers_by_value"):
+            return ContentDecision("SEVEN_DAY_THEME", None, None, "no_filings_today")
+    else:
+        # Member Spotlight
+        spotlight = build_member_spotlight(now_et)
+        if spotlight:
+            return ContentDecision("MEMBER_SPOTLIGHT", None, None, "member_spotlight")
+
+    return None
+
+
+def _compose_for_decision(decision: ContentDecision, now_et: datetime) -> Optional[List[Dict[str, Any]]]:
+    """Compose thread based on decision type."""
+    
+    if decision.content_type == "ALERT":
+        # Need to find the bundle and build full thread
+        bundles = build_bundles_from_db(now_et, hours=24)
+        recent_trades = fetch_recent_trades(days=400, now_et=now_et)
+        
+        for bundle in bundles:
+            if bundle_id(bundle) == decision.bundle_id:
+                signal = analyze_filing(bundle, recent_trades, now_et)
+                context = build_historical_context(bundle, signal, window_days=30)
+                insight = generate_insight(bundle, signal, context)
+                stats = signal.get("diagnostics", {})
+                return compose_thread(bundle, signal, insight, context, stats)
+        return None
+    
+    elif decision.content_type == "DAILY_TAPE":
+        tape = build_daily_tape(now_et)
+        return compose_daily_tape_thread(tape)
+    
+    elif decision.content_type == "SEVEN_DAY_THEME":
+        theme = build_seven_day_theme(now_et)
+        return compose_seven_day_theme_thread(theme)
+    
+    elif decision.content_type == "MEMBER_SPOTLIGHT":
+        spotlight = build_member_spotlight(now_et)
+        if spotlight:
+            return compose_member_spotlight_thread(spotlight)
+        return None
+    
+    return None
+
+
+def _log_decision(window: str, decision: Optional[ContentDecision], candidates: int):
+    """Log structured scheduler output."""
+    if decision is None:
+        print(f"[Scheduler] window={window} action=skip reason=no_content_selected")
+        return
+    
+    decision_str = f"{decision.content_type}"
+    if decision.bundle_id:
+        decision_str += f"(bundleId={decision.bundle_id}"
+        if decision.score is not None:
+            decision_str += f" score={decision.score}"
+        decision_str += ")"
+    
+    print(f"[Scheduler]")
+    print(f"window={window}")
+    print(f"candidates={candidates}")
+    print(f"chosen={decision_str}")
+    print(f"reason={decision.reason}")
+
+
+def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
+    """Main scheduler entry point. Called every cron run."""
+    
+    window = get_current_window(now_et)
+    if window is None:
+        print("[Scheduler] window=None action=skip reason=not_in_window")
+        return None
+    
+    if not is_trading_day(now_et):
+        print("[Scheduler] window=None action=skip reason=not_trading_day")
+        return None
+
+    today = now_et.strftime("%Y-%m-%d")
+    posts_today = count_posts_today(today)
+    
+    if posts_today >= 3:
+        print(f"[Scheduler] window={window} action=skip reason=daily_max_reached")
+        return None
+
+    # Gather bundles
+    bundles = build_bundles_from_db(now_et, hours=24)
+    unposted_bundles = filter_unposted(bundles, today)
+    recent_trades = fetch_recent_trades(days=400, now_et=now_et)
+    
+    # Score and rank
+    scored_bundles = _score_and_rank_bundles(unposted_bundles, recent_trades, now_et)
+    threshold = compute_threshold(len(unposted_bundles))
+
+    # Select content based on window
+    decision = None
+    if window == "MORNING":
+        decision = _select_for_morning(scored_bundles, threshold, today, now_et)
+    elif window == "MIDDAY":
+        decision = _select_for_midday(scored_bundles, threshold, today, now_et)
+    elif window == "POWER_HOUR":
+        decision = _select_for_power_hour(scored_bundles, threshold, today, now_et)
+    elif window == "EVENING":
+        decision = _select_for_evening(scored_bundles, threshold, today, now_et)
+
+    if decision is None:
+        _log_decision(window, None, len(unposted_bundles))
+        return None
+
+    # Check deduplication
+    if has_been_posted(decision.content_type, decision.bundle_id, today, window):
+        print(f"[Scheduler] window={window} action=skip reason=already_posted")
+        return None
+
+    # Compose thread
+    thread = _compose_for_decision(decision, now_et)
+    if not thread:
+        print(f"[Scheduler] window={window} action=skip reason=composition_failed")
+        return None
+
+    # Post
+    success = post_thread_directly(thread, now_et)
+    if not success:
+        print(f"[Scheduler] window={window} action=skip reason=post_failed")
+        return None
+
+    # Record
+    record_post(decision.content_type, decision.bundle_id, today, window, now_et)
+    
+    # Log
+    _log_decision(window, decision, len(unposted_bundles))
+    
+    return {
+        "window": window,
+        "content_type": decision.content_type,
+        "bundle_id": decision.bundle_id,
+        "score": decision.score,
+        "reason": decision.reason,
+    }
