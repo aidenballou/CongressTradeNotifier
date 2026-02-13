@@ -13,7 +13,6 @@ try:
     from scheduler.dynamic_threshold import compute_threshold
     from scheduler.dedupe_guard import (
         has_been_posted,
-        record_post,
         count_posts_today,
         has_daily_tape_today,
         has_seven_day_theme_today,
@@ -31,7 +30,6 @@ except ImportError:  # pragma: no cover
     from src.scheduler.dynamic_threshold import compute_threshold
     from src.scheduler.dedupe_guard import (
         has_been_posted,
-        record_post,
         count_posts_today,
         has_daily_tape_today,
         has_seven_day_theme_today,
@@ -277,9 +275,6 @@ def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
         print(f"[Scheduler] window={window} action=skip reason=post_failed_or_deferred")
         return None
 
-    # Record
-    record_post(decision.content_type, decision.bundle_id, today, window, now_et)
-    
     # Log
     _log_decision(window, decision, len(unposted_bundles))
     

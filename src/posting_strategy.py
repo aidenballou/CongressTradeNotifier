@@ -73,6 +73,9 @@ def _next_business_morning(now_et: datetime) -> datetime:
 
 def _schedule_for(now_et: datetime) -> datetime:
     now_et = now_et.astimezone(ET)
+    if now_et.weekday() >= 5:
+        return _next_business_morning(now_et)
+
     morning_cutoff = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
     close_cutoff = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
 
