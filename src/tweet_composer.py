@@ -4,32 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+try:
+    from filing_utils import action_verb, extract_trades as _extract_trades, member_name as _member_name
+except ImportError:  # pragma: no cover
+    from src.filing_utils import action_verb, extract_trades as _extract_trades, member_name as _member_name
+
 
 MAX_TWEET_LEN = 280
-
-
-def _extract_trades(filing: Dict[str, Any]) -> List[Dict[str, Any]]:
-    trades = filing.get("trades")
-    if isinstance(trades, list) and trades:
-        return trades
-    return [filing]
-
-
-def _normalize_action(action: str) -> str:
-    value = (action or "").strip().lower()
-    if value in {"buy", "purchase"}:
-        return "bought"
-    if value in {"sell", "sale"}:
-        return "sold"
-    return "traded"
-
-
-def _member_name(trade: Dict[str, Any]) -> str:
-    if trade.get("member_name"):
-        return str(trade.get("member_name")).strip()
-    first = str(trade.get("firstName", "")).strip()
-    last = str(trade.get("lastName", "")).strip()
-    return f"{first} {last}".strip()
 
 
 def _trim(text: str, limit: int = MAX_TWEET_LEN) -> str:
@@ -43,7 +24,7 @@ def _trade_blurb(trades: List[Dict[str, Any]]) -> str:
     segments = []
     for trade in trades[:4]:
         symbol = str(trade.get("symbol") or trade.get("ticker") or "").upper()
-        action = _normalize_action(str(trade.get("type") or trade.get("transaction_type") or ""))
+        action = action_verb(str(trade.get("type") or trade.get("transaction_type") or ""))
         if symbol:
             segments.append(f"{action} {symbol}")
     if not segments:

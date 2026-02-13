@@ -10,8 +10,10 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 try:
     from amounts import parse_amount
+    from filing_utils import extract_trades as _extract_trades, member_name as _member_name, normalize_action as _normalize_action
 except ImportError:  # pragma: no cover
     from src.amounts import parse_amount
+    from src.filing_utils import extract_trades as _extract_trades, member_name as _member_name, normalize_action as _normalize_action
 
 SignalStrength = Literal["LOW", "MEDIUM", "HIGH"]
 SignalType = Literal["ROTATION", "CONVICTION", "FIRST_BUY", "FIRST_SELL", "CLUSTER", "OTHER"]
@@ -47,30 +49,6 @@ def _parse_date(value: str) -> Optional[datetime]:
         return datetime.strptime(value, "%Y-%m-%d")
     except Exception:
         return None
-
-
-def _normalize_action(action: str) -> str:
-    norm = (action or "").strip().lower()
-    if norm in {"buy", "purchase"}:
-        return "BUY"
-    if norm in {"sell", "sale"}:
-        return "SELL"
-    return norm.upper() if norm else "OTHER"
-
-
-def _member_name(trade: Dict[str, Any]) -> str:
-    if trade.get("member_name"):
-        return str(trade.get("member_name")).strip()
-    first = str(trade.get("firstName", "")).strip()
-    last = str(trade.get("lastName", "")).strip()
-    return f"{first} {last}".strip()
-
-
-def _extract_trades(filing: Dict[str, Any]) -> List[Dict[str, Any]]:
-    trades = filing.get("trades")
-    if isinstance(trades, list) and trades:
-        return trades
-    return [filing]
 
 
 def _trade_key(trade: Dict[str, Any]) -> Tuple[str, str, str, str, str]:

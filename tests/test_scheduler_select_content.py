@@ -146,3 +146,45 @@ def test_run_scheduler_midday_picks_top_unposted_bundle(monkeypatch):
     assert recorded[0][0] == "ALERT"
     assert recorded[0][1] == "bundle_b"
     assert recorded[0][3] == "MIDDAY"
+
+
+def test_morning_theme_fallback_skips_when_already_posted_today(monkeypatch):
+    """MORNING should not pick SEVEN_DAY_THEME twice on the same day."""
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_daily_tape_today", lambda *_args: True)
+    monkeypatch.setattr(select_content, "has_seven_day_theme_today", lambda *_args: True)
+    monkeypatch.setattr(
+        select_content,
+        "build_seven_day_theme",
+        lambda _now: {"top_5_tickers_by_value": [{"ticker": "AAPL", "value": 1000.0}]},
+    )
+
+    decision = select_content._select_for_morning(
+        scored_bundles=[],
+        threshold=None,
+        today="2024-01-02",
+        now_et=datetime(2024, 1, 2, 8, 35, tzinfo=ET),
+    )
+
+    assert decision is None
+
+
+def test_evening_no_filings_skips_theme_when_already_posted_today(monkeypatch):
+    """EVENING no-filings path should not duplicate SEVEN_DAY_THEME."""
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_seven_day_theme_today", lambda *_args: True)
+    monkeypatch.setattr(select_content, "build_daily_tape", lambda _now: {"total_filings": 0})
+    monkeypatch.setattr(
+        select_content,
+        "build_seven_day_theme",
+        lambda _now: {"top_5_tickers_by_value": [{"ticker": "MSFT", "value": 1200.0}]},
+    )
+
+    decision = select_content._select_for_evening(
+        scored_bundles=[],
+        threshold=None,
+        today="2024-01-02",
+        now_et=datetime(2024, 1, 2, 17, 5, tzinfo=ET),
+    )
+
+    assert decision is None

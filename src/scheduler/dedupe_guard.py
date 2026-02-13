@@ -63,6 +63,15 @@ def has_daily_tape_today(date: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def has_seven_day_theme_today(date: str) -> bool:
+    """Check if seven day theme was posted today."""
+    cursor.execute(
+        "SELECT 1 FROM posted_content_log WHERE date = ? AND content_type = 'SEVEN_DAY_THEME' LIMIT 1",
+        (date,),
+    )
+    return cursor.fetchone() is not None
+
+
 def has_window_posted_today(date: str, window: str) -> bool:
     """Check if this window has already posted something today."""
     cursor.execute(

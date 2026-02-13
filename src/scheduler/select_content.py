@@ -16,6 +16,7 @@ try:
         record_post,
         count_posts_today,
         has_daily_tape_today,
+        has_seven_day_theme_today,
         has_window_posted_today,
     )
     from trade_analyzer import analyze_filing
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover
         record_post,
         count_posts_today,
         has_daily_tape_today,
+        has_seven_day_theme_today,
         has_window_posted_today,
     )
     from src.trade_analyzer import analyze_filing
@@ -85,7 +87,7 @@ def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], t
 
     # Fallback to 7-day Theme
     theme = build_seven_day_theme(now_et)
-    if theme.get("top_5_tickers_by_value"):
+    if theme.get("top_5_tickers_by_value") and not has_seven_day_theme_today(today):
         return ContentDecision("SEVEN_DAY_THEME", None, None, "seven_day_theme_fallback")
 
     return None
@@ -138,7 +140,7 @@ def _select_for_evening(scored_bundles: List[tuple], threshold: Optional[int], t
     if filings_today == 0:
         # 7-day Theme
         theme = build_seven_day_theme(now_et)
-        if theme.get("top_5_tickers_by_value"):
+        if theme.get("top_5_tickers_by_value") and not has_seven_day_theme_today(today):
             return ContentDecision("SEVEN_DAY_THEME", None, None, "no_filings_today")
     else:
         # Member Spotlight
@@ -188,19 +190,20 @@ def _log_decision(window: str, decision: Optional[ContentDecision], candidates: 
     if decision is None:
         print(f"[Scheduler] window={window} action=skip reason=no_content_selected")
         return
-    
-    decision_str = f"{decision.content_type}"
+
+    fields = [
+        f"window={window}",
+        "action=selected",
+        f"candidates={candidates}",
+        f"content_type={decision.content_type}",
+        f"reason={decision.reason}",
+    ]
     if decision.bundle_id:
-        decision_str += f"(bundleId={decision.bundle_id}"
-        if decision.score is not None:
-            decision_str += f" score={decision.score}"
-        decision_str += ")"
-    
-    print(f"[Scheduler]")
-    print(f"window={window}")
-    print(f"candidates={candidates}")
-    print(f"chosen={decision_str}")
-    print(f"reason={decision.reason}")
+        fields.append(f"bundle_id={decision.bundle_id}")
+    if decision.score is not None:
+        fields.append(f"score={decision.score}")
+
+    print(f"[Scheduler] {' '.join(fields)}")
 
 
 def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:

@@ -9,6 +9,11 @@ from typing import Any, Dict
 
 import requests
 
+try:
+    from filing_utils import extract_trades as _extract_trades, member_name as _member_name
+except ImportError:  # pragma: no cover
+    from src.filing_utils import extract_trades as _extract_trades, member_name as _member_name
+
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 MAX_FIELD_LEN = 240
@@ -22,21 +27,6 @@ UNCERTAINTY_PATTERNS = (
     r"\bnot guaranteed\b",
     r"\brisk(?:s|y)?\b",
 )
-
-
-def _extract_trades(filing: Dict[str, Any]) -> list[Dict[str, Any]]:
-    trades = filing.get("trades")
-    if isinstance(trades, list) and trades:
-        return trades
-    return [filing]
-
-
-def _member_name(trade: Dict[str, Any]) -> str:
-    if trade.get("member_name"):
-        return str(trade.get("member_name")).strip()
-    first = str(trade.get("firstName", "")).strip()
-    last = str(trade.get("lastName", "")).strip()
-    return f"{first} {last}".strip()
 
 
 def _sanitize_field(text: str) -> str:

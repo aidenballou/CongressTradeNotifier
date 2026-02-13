@@ -9,6 +9,7 @@ from scheduler.dedupe_guard import (
     count_posts_today,
     has_been_posted,
     has_daily_tape_today,
+    has_seven_day_theme_today,
     has_window_posted_today,
     record_post,
 )
@@ -109,3 +110,18 @@ def test_has_window_posted_today(clean_db):
     record_post("ALERT", "bundle_1", today, "MORNING", now_et)
     assert has_window_posted_today(today, "MORNING") is True
     assert has_window_posted_today(today, "MIDDAY") is False
+
+
+def test_has_seven_day_theme_today(clean_db):
+    """Test checking if seven day theme was posted today."""
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+
+    assert has_seven_day_theme_today(today) is False
+
+    record_post("SEVEN_DAY_THEME", None, today, "MORNING", now_et)
+    assert has_seven_day_theme_today(today) is True
+
+    # Other content types don't affect the check.
+    record_post("ALERT", "bundle_1", today, "MIDDAY", now_et)
+    assert has_seven_day_theme_today(today) is True

@@ -8,8 +8,10 @@ from typing import Any, Dict, List, Optional
 
 try:
     from db import cursor
+    from filing_utils import extract_trades as _extract_trades, member_name as _member_name, normalize_action as _normalize_action
 except ImportError:  # pragma: no cover
     from src.db import cursor
+    from src.filing_utils import extract_trades as _extract_trades, member_name as _member_name, normalize_action as _normalize_action
 
 try:
     from market_data import directional_return, get_return_after_window, sector_proxy_return
@@ -34,30 +36,6 @@ def _parse_date(value: str) -> Optional[datetime]:
         return datetime.strptime(value, "%Y-%m-%d")
     except Exception:
         return None
-
-
-def _normalize_action(action: str) -> str:
-    action_norm = (action or "").strip().lower()
-    if action_norm in {"buy", "purchase"}:
-        return "BUY"
-    if action_norm in {"sell", "sale"}:
-        return "SELL"
-    return "OTHER"
-
-
-def _extract_trades(filing: Dict[str, Any]) -> List[Dict[str, Any]]:
-    trades = filing.get("trades")
-    if isinstance(trades, list) and trades:
-        return trades
-    return [filing]
-
-
-def _member_name(trade: Dict[str, Any]) -> str:
-    if trade.get("member_name"):
-        return str(trade.get("member_name")).strip()
-    first = str(trade.get("firstName", "")).strip()
-    last = str(trade.get("lastName", "")).strip()
-    return f"{first} {last}".strip()
 
 
 def _infer_sector(trade: Dict[str, Any]) -> str:
