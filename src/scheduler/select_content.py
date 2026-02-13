@@ -271,7 +271,7 @@ def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
         "signal": {"summarySentence": decision.reason},
         "context": {"window": window, "bundle_id": decision.bundle_id},
     }
-    enqueue_signal_threads([queue_unit], now_et)
+    enqueue_signal_threads([queue_unit], now_et, force_due_now=True)
     dispatch_summary = dispatch_due_threads(now_et)
     if dispatch_summary.get("posted", 0) < 1:
         print(f"[Scheduler] window={window} action=skip reason=post_failed_or_deferred")

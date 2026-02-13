@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -11,9 +10,17 @@ from typing import Any, Dict
 import requests
 
 try:
-    from filing_utils import extract_trades as _extract_trades, member_name as _member_name
+    from filing_utils import (
+        extract_trades as _extract_trades,
+        member_name as _member_name,
+        stable_mode as _stable_mode,
+    )
 except ImportError:  # pragma: no cover
-    from src.filing_utils import extract_trades as _extract_trades, member_name as _member_name
+    from src.filing_utils import (
+        extract_trades as _extract_trades,
+        member_name as _member_name,
+        stable_mode as _stable_mode,
+    )
 
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
@@ -28,12 +35,6 @@ UNCERTAINTY_PATTERNS = (
     r"\bnot guaranteed\b",
     r"\brisk(?:s|y)?\b",
 )
-
-
-def _stable_mode(seed: str, buckets: int = 3) -> int:
-    """Map seed to a deterministic bucket index."""
-    digest = hashlib.sha256(seed.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") % buckets
 
 
 def _sanitize_field(text: str) -> str:

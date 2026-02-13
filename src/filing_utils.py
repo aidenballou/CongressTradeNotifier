@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List
 
 
@@ -40,3 +41,9 @@ def action_verb(action: str) -> str:
     if normalized == "SELL":
         return "sold"
     return "traded"
+
+
+def stable_mode(seed: str, buckets: int = 3) -> int:
+    """Map a seed to a deterministic bucket index."""
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % buckets

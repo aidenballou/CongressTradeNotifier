@@ -167,7 +167,12 @@ def _apply_same_day_merge(units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return merged
 
 
-def enqueue_signal_threads(filings: List[Dict[str, Any]], now_et: datetime) -> int:
+def enqueue_signal_threads(
+    filings: List[Dict[str, Any]],
+    now_et: datetime,
+    *,
+    force_due_now: bool = False,
+) -> int:
     """Queue prepared HIGH-signal thread payloads for posting."""
 
     if not filings:
@@ -182,7 +187,7 @@ def enqueue_signal_threads(filings: List[Dict[str, Any]], now_et: datetime) -> i
             continue
 
         queue_key = unit.get("queue_key") or _stable_queue_key(unit)
-        schedule_time = _schedule_for(now_et)
+        schedule_time = now_et if force_due_now else _schedule_for(now_et)
         payload = {
             "thread": thread,
             "filing": unit.get("filing") or {},

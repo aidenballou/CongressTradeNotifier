@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Dict, List
 
 try:
-    from filing_utils import action_verb, extract_trades as _extract_trades, member_name as _member_name
+    from filing_utils import (
+        action_verb,
+        extract_trades as _extract_trades,
+        member_name as _member_name,
+        stable_mode as _stable_mode,
+    )
 except ImportError:  # pragma: no cover
-    from src.filing_utils import action_verb, extract_trades as _extract_trades, member_name as _member_name
+    from src.filing_utils import (
+        action_verb,
+        extract_trades as _extract_trades,
+        member_name as _member_name,
+        stable_mode as _stable_mode,
+    )
 
 
 MAX_TWEET_LEN = 280
-
-
-def _stable_mode(seed: str, buckets: int = 3) -> int:
-    """Map seed to a deterministic bucket index."""
-    digest = hashlib.sha256(seed.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") % buckets
 
 
 def _trim(text: str, limit: int = MAX_TWEET_LEN) -> str:

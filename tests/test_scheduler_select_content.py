@@ -126,7 +126,7 @@ def test_run_scheduler_midday_picks_top_unposted_bundle(monkeypatch):
     monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
     monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
     monkeypatch.setattr(select_content, "_compose_for_decision", lambda *_args: [{"text": "ok"}])
-    monkeypatch.setattr(select_content, "enqueue_signal_threads", lambda *_args: 1)
+    monkeypatch.setattr(select_content, "enqueue_signal_threads", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args: {"posted": 1})
     monkeypatch.setattr(
         select_content,
@@ -147,6 +147,42 @@ def test_run_scheduler_midday_picks_top_unposted_bundle(monkeypatch):
     assert recorded[0][0] == "ALERT"
     assert recorded[0][1] == "bundle_b"
     assert recorded[0][3] == "MIDDAY"
+
+
+def test_run_scheduler_enqueues_selected_content_as_due_now(monkeypatch):
+    """Regression: selected window content should be queue-due in the same run."""
+    enqueue_calls = []
+    now_et = datetime(2024, 1, 2, 8, 35, tzinfo=ET)
+
+    monkeypatch.setattr(select_content, "get_current_window", lambda _now: "MORNING")
+    monkeypatch.setattr(select_content, "is_trading_day", lambda _now: True)
+    monkeypatch.setattr(select_content, "count_posts_today", lambda _today: 0)
+    monkeypatch.setattr(select_content, "build_bundles_from_db", lambda _now, hours=24: [{"id": "bundle_a"}])
+    monkeypatch.setattr(select_content, "filter_unposted", lambda bundles, _today: bundles)
+    monkeypatch.setattr(select_content, "fetch_recent_trades", lambda days, now_et: [])
+    monkeypatch.setattr(select_content, "_score_and_rank_bundles", lambda *_args: [({"id": "bundle_a"}, {}, 9)])
+    monkeypatch.setattr(select_content, "compute_threshold", lambda _count: 7)
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
+    monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
+    monkeypatch.setattr(
+        select_content,
+        "_compose_for_decision",
+        lambda *_args: [{"text": "ok", "media_symbol": None, "media_trade_date": None}],
+    )
+    monkeypatch.setattr(
+        select_content,
+        "enqueue_signal_threads",
+        lambda filings, posted_at, **kwargs: enqueue_calls.append((filings, posted_at, kwargs)) or 1,
+    )
+    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args: {"posted": 1})
+    monkeypatch.setattr(select_content, "record_post", lambda *_args, **_kwargs: None)
+
+    result = select_content.run_scheduler(now_et)
+
+    assert result is not None
+    assert len(enqueue_calls) == 1
+    assert enqueue_calls[0][2].get("force_due_now") is True
 
 
 def test_morning_theme_fallback_skips_when_already_posted_today(monkeypatch):

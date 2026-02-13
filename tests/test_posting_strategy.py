@@ -139,6 +139,20 @@ def test_enqueue_signal_threads_merges_same_day(monkeypatch):
     assert len(payload["thread"]) == 3
 
 
+def test_enqueue_signal_threads_force_due_now_bypasses_time_guards(monkeypatch):
+    _setup_db(monkeypatch)
+
+    now_et = datetime(2026, 2, 11, 8, 35, tzinfo=ET)
+    count = posting_strategy.enqueue_signal_threads([_unit(root="Immediate")], now_et, force_due_now=True)
+    assert count == 1
+
+    posting_strategy.cursor.execute("SELECT scheduled_for FROM tweet_queue")
+    row = posting_strategy.cursor.fetchone()
+    assert row is not None
+    scheduled_for = datetime.fromisoformat(row[0]).astimezone(ET)
+    assert scheduled_for == now_et
+
+
 def test_dispatch_due_threads_anti_spam_and_post(monkeypatch):
     _setup_db(monkeypatch)
 

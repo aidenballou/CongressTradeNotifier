@@ -248,8 +248,8 @@ def test_window(window_name: str, dry_run: bool = False, force_time: datetime = 
                     thread = compose_seven_day_theme_thread(theme)
                     content_type = "SEVEN_DAY_THEME"
         elif window_name == "MIDDAY":
-            if len(scored) >= 2 and threshold is not None and scored[1][2] >= threshold:
-                bundle, signal, score = scored[1]
+            if scored and threshold is not None and scored[0][2] >= threshold:
+                bundle, signal, score = scored[0]
                 context = build_historical_context(bundle, signal, window_days=30)
                 insight = generate_insight(bundle, signal, context)
                 stats = signal.get("diagnostics", {})
