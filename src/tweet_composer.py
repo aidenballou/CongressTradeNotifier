@@ -235,7 +235,7 @@ def compose_member_spotlight_thread(spotlight: Dict[str, Any]) -> List[Dict[str,
         else:
             return f"${value:.0f}"
 
-    action = "bought" if "BUY" in (trans_type or "").upper() or "PURCHASE" in (trans_type or "").upper() else "sold"
+    action = action_verb(str(trans_type or ""))
 
     tweet1 = _trim(f"Member Spotlight: {member} {action} {ticker} ({_format_amount(amount_value)}).")
 

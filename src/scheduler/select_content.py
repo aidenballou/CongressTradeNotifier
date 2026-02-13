@@ -23,7 +23,7 @@ try:
     from historical_context import build_historical_context
     from insight_generator import generate_insight
     from tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
-    from posting_strategy import post_thread_directly
+    from posting_strategy import enqueue_signal_threads, dispatch_due_threads
 except ImportError:  # pragma: no cover
     from src.analytics.bundle_builder import build_bundles_from_db, bundle_id, filter_unposted, fetch_recent_trades
     from src.analytics.rollups import build_daily_tape, build_seven_day_theme, build_member_spotlight
@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover
     from src.historical_context import build_historical_context
     from src.insight_generator import generate_insight
     from src.tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
-    from src.posting_strategy import post_thread_directly
+    from src.posting_strategy import enqueue_signal_threads, dispatch_due_threads
 
 
 @dataclass
@@ -208,7 +208,9 @@ def _log_decision(window: str, decision: Optional[ContentDecision], candidates: 
 
 def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
     """Main scheduler entry point. Called every cron run."""
-    
+    # Drain due queue items on every run (including outside windows / non-trading days).
+    dispatch_due_threads(now_et)
+
     window = get_current_window(now_et)
     if window is None:
         print("[Scheduler] window=None action=skip reason=not_in_window")
@@ -260,10 +262,19 @@ def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
         print(f"[Scheduler] window={window} action=skip reason=composition_failed")
         return None
 
-    # Post
-    success = post_thread_directly(thread, now_et)
-    if not success:
-        print(f"[Scheduler] window={window} action=skip reason=post_failed")
+    # Enqueue this decision and dispatch so it can post in this run.
+    queue_unit = {
+        "disclosureDate": today,
+        "signalType": decision.content_type,
+        "thread": thread,
+        "filing": {"disclosureDate": today, "trades": []},
+        "signal": {"summarySentence": decision.reason},
+        "context": {"window": window, "bundle_id": decision.bundle_id},
+    }
+    enqueue_signal_threads([queue_unit], now_et)
+    dispatch_summary = dispatch_due_threads(now_et)
+    if dispatch_summary.get("posted", 0) < 1:
+        print(f"[Scheduler] window={window} action=skip reason=post_failed_or_deferred")
         return None
 
     # Record

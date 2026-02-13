@@ -317,18 +317,3 @@ def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
     return summary
 
 
-def post_thread_directly(thread: List[Dict[str, Any]], now_et: datetime) -> bool:
-    """Post a thread immediately, respecting anti-spam. Returns True on success."""
-    client_cls = _get_twitter_client_cls()
-    client = client_cls()
-    last_root = _get_metadata("last_root_posted_at")
-    if last_root:
-        last_dt = _from_iso(last_root)
-        if now_et < last_dt + timedelta(seconds=ANTI_SPAM_SECONDS):
-            return False
-    try:
-        client.post_thread(thread, min_delay_seconds=20, max_delay_seconds=60)
-        _set_metadata("last_root_posted_at", _to_iso(now_et))
-        return True
-    except Exception:
-        return False

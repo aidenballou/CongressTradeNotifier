@@ -13,6 +13,40 @@ except ImportError:  # pragma: no cover
     from src.db import cursor
 
 
+def _split_member_name(member_name: str) -> tuple[str, str]:
+    """Split full member name into first and last parts."""
+    if not member_name:
+        return ("", "")
+    first, last = (member_name.split(" ", 1) + [""])[:2]
+    return first, last
+
+
+def _trade_row_to_dict(row: tuple[Any, ...]) -> Dict[str, Any]:
+    """Map a trades table row into the canonical trade dictionary shape."""
+    member_name = str(row[9] or "")
+    first, last = _split_member_name(member_name)
+    return {
+        "symbol": row[0],
+        "ticker": row[0],
+        "disclosureDate": row[1],
+        "disclosure_date": row[1],
+        "transactionDate": row[2],
+        "transaction_date": row[2],
+        "district": row[3],
+        "owner": row[4],
+        "assetDescription": row[5],
+        "asset_description": row[5],
+        "assetType": row[6],
+        "amount": row[7],
+        "type": row[8],
+        "transaction_type": row[8],
+        "member_name": member_name,
+        "firstName": first,
+        "lastName": last,
+        "comment": row[10],
+    }
+
+
 def fetch_recent_trades(days: int = 400, now_et: datetime | None = None) -> List[Dict[str, Any]]:
     """Read recent history from SQLite for signal and context calculations."""
 
@@ -37,31 +71,7 @@ def fetch_recent_trades(days: int = 400, now_et: datetime | None = None) -> List
     rows = cursor.fetchall()
     history: List[Dict[str, Any]] = []
     for row in rows:
-        member_name = str(row[9] or "")
-        first, last = (member_name.split(" ", 1) + [""])[:2] if member_name else ("", "")
-
-        history.append(
-            {
-                "symbol": row[0],
-                "ticker": row[0],
-                "disclosureDate": row[1],
-                "disclosure_date": row[1],
-                "transactionDate": row[2],
-                "transaction_date": row[2],
-                "district": row[3],
-                "owner": row[4],
-                "assetDescription": row[5],
-                "asset_description": row[5],
-                "assetType": row[6],
-                "amount": row[7],
-                "type": row[8],
-                "transaction_type": row[8],
-                "member_name": member_name,
-                "firstName": first,
-                "lastName": last,
-                "comment": row[10],
-            }
-        )
+        history.append(_trade_row_to_dict(row))
 
     return history
 
@@ -85,31 +95,7 @@ def build_bundles_from_db(now_et: datetime, hours: int = 24) -> List[Dict[str, A
     rows = cursor.fetchall()
     trades: List[Dict[str, Any]] = []
     for row in rows:
-        member_name = str(row[9] or "")
-        first, last = (member_name.split(" ", 1) + [""])[:2] if member_name else ("", "")
-
-        trades.append(
-            {
-                "symbol": row[0],
-                "ticker": row[0],
-                "disclosureDate": row[1],
-                "disclosure_date": row[1],
-                "transactionDate": row[2],
-                "transaction_date": row[2],
-                "district": row[3],
-                "owner": row[4],
-                "assetDescription": row[5],
-                "asset_description": row[5],
-                "assetType": row[6],
-                "amount": row[7],
-                "type": row[8],
-                "transaction_type": row[8],
-                "member_name": member_name,
-                "firstName": first,
-                "lastName": last,
-                "comment": row[10],
-            }
-        )
+        trades.append(_trade_row_to_dict(row))
 
     # Group by member + disclosure_date
     grouped: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)

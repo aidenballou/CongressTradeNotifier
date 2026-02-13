@@ -126,7 +126,8 @@ def test_run_scheduler_midday_picks_top_unposted_bundle(monkeypatch):
     monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
     monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
     monkeypatch.setattr(select_content, "_compose_for_decision", lambda *_args: [{"text": "ok"}])
-    monkeypatch.setattr(select_content, "post_thread_directly", lambda *_args: True)
+    monkeypatch.setattr(select_content, "enqueue_signal_threads", lambda *_args: 1)
+    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args: {"posted": 1})
     monkeypatch.setattr(
         select_content,
         "record_post",
@@ -167,6 +168,39 @@ def test_morning_theme_fallback_skips_when_already_posted_today(monkeypatch):
     )
 
     assert decision is None
+
+
+def test_run_scheduler_calls_dispatch_when_outside_window(monkeypatch):
+    """Queue drain: dispatch_due_threads is called even when not in any posting window."""
+    dispatch_calls = []
+    monkeypatch.setattr(
+        select_content,
+        "dispatch_due_threads",
+        lambda now_et: dispatch_calls.append(now_et) or {"posted": 0, "pending": 0, "deferred": 0, "failed": 0},
+    )
+    monkeypatch.setattr(select_content, "get_current_window", lambda _now: None)
+    now_et = datetime(2024, 1, 2, 10, 0, tzinfo=ET)
+    result = select_content.run_scheduler(now_et)
+    assert result is None
+    assert len(dispatch_calls) == 1
+    assert dispatch_calls[0] == now_et
+
+
+def test_run_scheduler_calls_dispatch_on_non_trading_day(monkeypatch):
+    """Queue drain: dispatch_due_threads is called even on weekend/non-trading day."""
+    dispatch_calls = []
+    monkeypatch.setattr(
+        select_content,
+        "dispatch_due_threads",
+        lambda now_et: dispatch_calls.append(now_et) or {"posted": 0, "pending": 0, "deferred": 0, "failed": 0},
+    )
+    monkeypatch.setattr(select_content, "get_current_window", lambda _now: "MORNING")
+    monkeypatch.setattr(select_content, "is_trading_day", lambda _now: False)
+    now_et = datetime(2024, 1, 6, 8, 35, tzinfo=ET)  # Saturday
+    result = select_content.run_scheduler(now_et)
+    assert result is None
+    assert len(dispatch_calls) == 1
+    assert dispatch_calls[0] == now_et
 
 
 def test_evening_no_filings_skips_theme_when_already_posted_today(monkeypatch):

@@ -30,6 +30,8 @@ jobs:
 
       - name: Get previous successful run ID
         id: get-prev-run
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           PREV=$(gh run list --workflow=daily-run-main.yml --limit 10 --json databaseId,status,conclusion --jq '.[] | select(.status == "completed" and .conclusion == "success" and .databaseId != '"${{ github.run_id }}"') | .databaseId' | head -1)
           echo "run_id=$PREV" >> $GITHUB_OUTPUT

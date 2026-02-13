@@ -136,3 +136,37 @@ def test_dispatch_due_threads_anti_spam_and_post(monkeypatch):
     posting_strategy.cursor.execute("SELECT status FROM tweet_queue")
     status = posting_strategy.cursor.fetchone()[0]
     assert status == "POSTED"
+
+
+def test_out_of_window_scheduler_run_drains_deferred_queue_item(monkeypatch):
+    """Regression: a later cron run outside any window still drains deferred queue items."""
+    _setup_db(monkeypatch)
+
+    class FakeTwitterClient:
+        def __init__(self):
+            self.calls = []
+
+        def post_thread(self, thread, min_delay_seconds=20, max_delay_seconds=60):
+            self.calls.append((thread, min_delay_seconds, max_delay_seconds))
+            return ["1", "2", "3"]
+
+    fake_client = FakeTwitterClient()
+    monkeypatch.setattr(posting_strategy, "TwitterClient", lambda: fake_client)
+
+    now_et = datetime(2026, 2, 11, 10, 0, tzinfo=ET)
+    posting_strategy.enqueue_signal_threads([_unit()], now_et)
+    posting_strategy._set_metadata("last_root_posted_at", posting_strategy._to_iso(now_et))
+
+    first = posting_strategy.dispatch_due_threads(now_et)
+    assert first["deferred"] == 1
+    assert first["posted"] == 0
+    assert len(fake_client.calls) == 0
+
+    import scheduler.select_content as select_content
+    monkeypatch.setattr(select_content, "get_current_window", lambda _now: None)
+    later_et = now_et + timedelta(minutes=3)
+    result = select_content.run_scheduler(later_et)
+    assert result is None
+    assert len(fake_client.calls) == 1
+    posting_strategy.cursor.execute("SELECT status FROM tweet_queue")
+    assert posting_strategy.cursor.fetchone()[0] == "POSTED"
