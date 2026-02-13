@@ -311,7 +311,8 @@ class TestTwitterClient:
         
         # Verify retry happened
         assert mock_client_instance.create_tweet.call_count == 2
-        mock_sleep.assert_called_once_with(60)  # First retry waits 60 seconds
+        # First retry waits 60 seconds (there may be other tiny sleeps in the stack)
+        mock_sleep.assert_any_call(60)
     
     @patch.dict('os.environ', {
         'TWITTER_API_KEY': 'test_key',
@@ -429,6 +430,62 @@ class TestTwitterClient:
         
         # Verify only one call was made (no retries)
         assert mock_client_instance.create_tweet.call_count == 1
+
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_post_with_retry_returns_tweet_id_and_reply_target(self, mock_client):
+        """Ensure _post_with_retry returns the tweet id and forwards reply target."""
+        mock_client_instance = Mock()
+        mock_client.return_value = mock_client_instance
+        mock_client_instance.create_tweet.return_value = Mock(data={'id': '42'})
+
+        client = TwitterClient()
+        tweet_id = client._post_with_retry("hello world", in_reply_to_tweet_id="41")
+
+        assert tweet_id == "42"
+        mock_client_instance.create_tweet.assert_called_once_with(
+            text="hello world",
+            in_reply_to_tweet_id="41",
+        )
+
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    @patch('src.twitter_client.time.sleep')
+    def test_post_thread_builds_reply_chain(self, mock_sleep, mock_client):
+        """Thread posting should chain reply ids from tweet to tweet."""
+        mock_client.return_value = Mock()
+        client = TwitterClient()
+
+        parent_ids = []
+
+        def fake_post(text, max_retries=3, media_ids=None, in_reply_to_tweet_id=None):
+            parent_ids.append(in_reply_to_tweet_id)
+            return str(100 + len(parent_ids) - 1)
+
+        with patch.object(client, '_post_with_retry', side_effect=fake_post):
+            ids = client.post_thread(
+                [
+                    {"text": "tweet one"},
+                    {"text": "tweet two"},
+                    {"text": "tweet three"},
+                ],
+                min_delay_seconds=20,
+                max_delay_seconds=20,
+            )
+
+        assert ids == ["100", "101", "102"]
+        assert parent_ids == [None, "100", "101"]
+        assert mock_sleep.call_count == 2
 
 
 class TestPostTradesToTwitter:

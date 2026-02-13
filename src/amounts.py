@@ -1,13 +1,17 @@
 """Helpers for working with trade amount strings."""
 
 
-def parse_amount(amount_str: str | None) -> float:
+def parse_amount(amount_str: str | float | int | None) -> float:
     """Parse amount ranges like "$1,001 - $15,000" and return an average as float."""
 
+    if amount_str is None:
+        return 0.0
+    if isinstance(amount_str, (int, float)):
+        return float(amount_str)
     if not amount_str:
         return 0.0
 
-    cleaned = amount_str.replace("$", "").replace(",", "")
+    cleaned = str(amount_str).replace("$", "").replace(",", "")
     parts = cleaned.split(" - ")
 
     if len(parts) == 2:

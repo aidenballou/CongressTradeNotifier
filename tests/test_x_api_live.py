@@ -65,6 +65,10 @@ def _fail_with_http_details(e: Exception) -> None:
     )
 
 
+@pytest.mark.skipif(
+    os.getenv("TWITTER_LIVE_GET_ME", "false").lower() not in {"1", "true", "yes"},
+    reason="Set TWITTER_LIVE_GET_ME=true to exercise a real GET /2/users/me",
+)
 def test_x_api_get_me_smoke():
     """Smoke test: verifies credentials/auth by calling GET /2/users/me."""
     client = _make_client()

@@ -2,6 +2,7 @@ import os
 import json
 import re
 import time
+import random
 import logging
 import tempfile
 from typing import Dict, Optional, List, Tuple
@@ -661,7 +662,7 @@ class TwitterClient:
 
         return '', None
     
-    def post_trade_tweet(self, trade: Dict) -> None:
+    def post_trade_tweet(self, trade: Dict) -> str:
         """
         Post a tweet about a congressional trade with error handling and rate limiting.
         
@@ -698,17 +699,73 @@ class TwitterClient:
                     media_ids = None
 
             # Post tweet with retry logic (optionally with media)
-            self._post_with_retry(tweet_text, media_ids=media_ids)
+            tweet_id = self._post_with_retry(tweet_text, media_ids=media_ids)
 
             logger.info("Tweet posted successfully")
+            return tweet_id
             
         except Exception as e:
             if getattr(e, "response", None) is not None:
                 self._log_twitter_error(e, operation="post_trade_tweet")
             logger.error(f"Failed to post tweet for trade {trade.get('symbol', 'Unknown')}: {str(e)}")
             raise
+
+    def post_thread(
+        self,
+        tweets: List[Dict],
+        min_delay_seconds: int = 20,
+        max_delay_seconds: int = 60,
+    ) -> List[str]:
+        """Post a reply-chain thread and return created tweet IDs."""
+
+        posted_ids: List[str] = []
+        if not tweets:
+            return posted_ids
+
+        for idx, payload in enumerate(tweets):
+            text = (payload.get("text") or "").strip()
+            if not text:
+                continue
+
+            media_ids: Optional[List[int]] = None
+            symbol = (payload.get("media_symbol") or "").upper().strip()
+            trade_date = payload.get("media_trade_date")
+
+            if self.attach_chart and symbol and plt is not None:
+                try:
+                    image_path = self._build_chart_for_symbol(symbol, trade_date)
+                    if image_path:
+                        media_id = self.api_v1.media_upload(filename=image_path).media_id
+                        media_ids = [media_id]
+                        try:
+                            os.remove(image_path)
+                        except Exception:
+                            pass
+                except Exception as chart_err:
+                    logger.warning(f"Chart generation/upload failed for {symbol}: {chart_err}")
+                    media_ids = None
+
+            parent_id = posted_ids[-1] if posted_ids else None
+            tweet_id = self._post_with_retry(
+                text,
+                media_ids=media_ids,
+                in_reply_to_tweet_id=parent_id,
+            )
+            posted_ids.append(tweet_id)
+
+            if idx < len(tweets) - 1:
+                wait_time = random.randint(min_delay_seconds, max_delay_seconds)
+                time.sleep(wait_time)
+
+        return posted_ids
     
-    def _post_with_retry(self, tweet_text: str, max_retries: int = 3, media_ids: Optional[List[int]] = None) -> None:
+    def _post_with_retry(
+        self,
+        tweet_text: str,
+        max_retries: int = 3,
+        media_ids: Optional[List[int]] = None,
+        in_reply_to_tweet_id: Optional[str] = None,
+    ) -> str:
         """
         Post tweet with exponential backoff retry for rate limiting.
         
@@ -718,17 +775,27 @@ class TwitterClient:
         """
         for attempt in range(max_retries + 1):
             try:
+                create_kwargs: Dict[str, object] = {"text": tweet_text}
+                if in_reply_to_tweet_id:
+                    create_kwargs["in_reply_to_tweet_id"] = in_reply_to_tweet_id
+
                 if media_ids:
                     # Primary path: v2 param 'media' expects dict with 'media_ids'
                     try:
-                        response = self.client.create_tweet(text=tweet_text, media={"media_ids": media_ids})
+                        response = self.client.create_tweet(
+                            **create_kwargs,
+                            media={"media_ids": media_ids},
+                        )
                     except TypeError:
                         # Fallback for alternative client signatures
-                        response = self.client.create_tweet(text=tweet_text, media_ids=media_ids)
+                        response = self.client.create_tweet(
+                            **create_kwargs,
+                            media_ids=media_ids,
+                        )
                 else:
-                    response = self.client.create_tweet(text=tweet_text)
+                    response = self.client.create_tweet(**create_kwargs)
                 logger.info(f"Tweet posted with ID: {response.data['id']}")
-                return
+                return str(response.data["id"])
                 
             except tweepy.TooManyRequests as e:
                 # Log details before backing off
@@ -761,6 +828,8 @@ class TwitterClient:
                 else:
                     logger.error(f"Max retries exceeded. Final error: {str(e)}")
                     raise
+
+        raise RuntimeError("Tweet post retry loop exited unexpectedly")
 
     # -------------------------
     # Chart & Price utilities
