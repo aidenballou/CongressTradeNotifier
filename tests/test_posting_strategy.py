@@ -33,10 +33,43 @@ def _setup_db(monkeypatch):
         """
     )
     cur.execute("CREATE INDEX idx_tweet_queue_status_schedule ON tweet_queue(status, scheduled_for)")
+    cur.execute(
+        """
+        CREATE TABLE posted_content_log (
+            id INTEGER PRIMARY KEY,
+            content_type TEXT NOT NULL,
+            bundle_id TEXT,
+            date TEXT NOT NULL,
+            window TEXT NOT NULL,
+            hash TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
 
     monkeypatch.setattr(posting_strategy, "conn", conn)
     monkeypatch.setattr(posting_strategy, "cursor", cur)
+    monkeypatch.setattr(
+        posting_strategy,
+        "record_post",
+        lambda content_type, bundle_id, date, window, now_et: cur.execute(
+            """
+            INSERT OR IGNORE INTO posted_content_log
+            (content_type, bundle_id, date, window, hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                content_type,
+                bundle_id,
+                date,
+                window,
+                f"{content_type}|{bundle_id or ''}|{date}|{window}",
+                now_et.isoformat(),
+            ),
+        )
+        or conn.commit(),
+    )
     return conn, cur
 
 
@@ -170,3 +203,54 @@ def test_out_of_window_scheduler_run_drains_deferred_queue_item(monkeypatch):
     assert len(fake_client.calls) == 1
     posting_strategy.cursor.execute("SELECT status FROM tweet_queue")
     assert posting_strategy.cursor.fetchone()[0] == "POSTED"
+    posting_strategy.cursor.execute(
+        "SELECT content_type, date, window FROM posted_content_log ORDER BY id ASC"
+    )
+    assert posting_strategy.cursor.fetchall() == [("CONVICTION", "2026-02-10", "QUEUE")]
+
+
+def test_dispatch_logs_deferred_item_when_it_posts_later(monkeypatch):
+    """If first due item posts and second is deferred, second is logged once later posted."""
+    _setup_db(monkeypatch)
+
+    class FakeTwitterClient:
+        def __init__(self):
+            self.calls = []
+
+        def post_thread(self, thread, min_delay_seconds=20, max_delay_seconds=60):
+            self.calls.append((thread, min_delay_seconds, max_delay_seconds))
+            return ["1", "2", "3"]
+
+    fake_client = FakeTwitterClient()
+    monkeypatch.setattr(posting_strategy, "TwitterClient", lambda: fake_client)
+
+    now_et = datetime(2026, 2, 11, 10, 0, tzinfo=ET)
+    posting_strategy.enqueue_signal_threads(
+        [
+            _unit(disclosure="2026-02-10", root="Root A"),
+            _unit(disclosure="2026-02-11", root="Root B"),
+        ],
+        now_et,
+    )
+
+    first = posting_strategy.dispatch_due_threads(now_et)
+    assert first["posted"] == 1
+    assert first["deferred"] == 1
+
+    posting_strategy.cursor.execute(
+        "SELECT content_type, date, window FROM posted_content_log ORDER BY id ASC"
+    )
+    assert posting_strategy.cursor.fetchall() == [("CONVICTION", "2026-02-10", "QUEUE")]
+
+    second = posting_strategy.dispatch_due_threads(now_et + timedelta(minutes=3))
+    assert second["posted"] == 1
+    assert second["deferred"] == 0
+    assert len(fake_client.calls) == 2
+
+    posting_strategy.cursor.execute(
+        "SELECT content_type, date, window FROM posted_content_log ORDER BY id ASC"
+    )
+    assert posting_strategy.cursor.fetchall() == [
+        ("CONVICTION", "2026-02-10", "QUEUE"),
+        ("CONVICTION", "2026-02-11", "QUEUE"),
+    ]

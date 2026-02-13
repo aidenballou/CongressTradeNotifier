@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,12 @@ UNCERTAINTY_PATTERNS = (
     r"\bnot guaranteed\b",
     r"\brisk(?:s|y)?\b",
 )
+
+
+def _stable_mode(seed: str, buckets: int = 3) -> int:
+    """Map seed to a deterministic bucket index."""
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % buckets
 
 
 def _sanitize_field(text: str) -> str:
@@ -142,7 +149,7 @@ def _fallback_generate(filing: Dict[str, Any], signal: Dict[str, Any], context: 
     signal_type = str(signal.get("signalType") or "OTHER")
 
     key = f"{member}|{ticker_text}|{signal_type}|{filing.get('disclosureDate', '')}"
-    mode = abs(hash(key)) % 3
+    mode = _stable_mode(key)
 
     hooks = [
         f"Congress just leaned into {ticker_text} again.",

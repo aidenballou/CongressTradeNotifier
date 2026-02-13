@@ -10,8 +10,10 @@ from zoneinfo import ZoneInfo
 
 try:
     from db import conn, cursor
+    from scheduler.dedupe_guard import record_post
 except ImportError:  # pragma: no cover
     from src.db import conn, cursor
+    from src.scheduler.dedupe_guard import record_post
 
 TwitterClient = None
 
@@ -186,6 +188,12 @@ def enqueue_signal_threads(filings: List[Dict[str, Any]], now_et: datetime) -> i
             "filing": unit.get("filing") or {},
             "signal": unit.get("signal") or {},
             "context": unit.get("context") or {},
+            "content_type": unit.get("signalType") or "OTHER",
+            "disclosure_date": (
+                unit.get("disclosureDate")
+                or (unit.get("filing") or {}).get("disclosureDate")
+                or ""
+            ),
             "created_at": _to_iso(now_et),
         }
 
@@ -287,6 +295,19 @@ def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
             )
             conn.commit()
             _set_metadata("last_root_posted_at", _to_iso(now_et))
+            content_type = str(payload.get("content_type") or "").strip()
+            disclosure_date = str(payload.get("disclosure_date") or "").strip()
+            if content_type and disclosure_date:
+                context = payload.get("context") or {}
+                window = str(context.get("window") or "QUEUE")
+                bundle_id = context.get("bundle_id")
+                record_post(
+                    content_type=content_type,
+                    bundle_id=str(bundle_id) if bundle_id else None,
+                    date=disclosure_date,
+                    window=window,
+                    now_et=now_et,
+                )
             summary["posted"] += 1
 
         except Exception as exc:

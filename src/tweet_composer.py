@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List
 
 try:
@@ -11,6 +12,12 @@ except ImportError:  # pragma: no cover
 
 
 MAX_TWEET_LEN = 280
+
+
+def _stable_mode(seed: str, buckets: int = 3) -> int:
+    """Map seed to a deterministic bucket index."""
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % buckets
 
 
 def _trim(text: str, limit: int = MAX_TWEET_LEN) -> str:
@@ -42,6 +49,15 @@ def _pick_symbol(trades: List[Dict[str, Any]]) -> str:
     return ""
 
 
+def _format_amount(value: float) -> str:
+    """Format dollar values as $XM/$XK/$X."""
+    if value >= 1_000_000:
+        return f"${value/1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"${value/1_000:.0f}K"
+    return f"${value:.0f}"
+
+
 def compose_thread(
     filing: Dict[str, Any],
     signal: Dict[str, Any],
@@ -64,7 +80,7 @@ def compose_thread(
     score = stats.get("score") or signal.get("diagnostics", {}).get("score") or "-"
 
     seed = f"{member}|{symbol}|{signal_type}|{filing.get('disclosureDate', '')}"
-    mode = abs(hash(seed)) % 3
+    mode = _stable_mode(seed)
 
     if mode == 0:
         tweet1 = f"{hook} {member} {trade_blurb}. {interpretation} {question}"
@@ -123,15 +139,6 @@ def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
         tweet1 = _trim("Daily Tape: No new congressional filings in the last 24 hours.")
         return [{"text": tweet1, "media_symbol": None, "media_trade_date": None}]
 
-    # Format amounts
-    def _format_amount(amount_value: float) -> str:
-        if amount_value >= 1_000_000:
-            return f"${amount_value/1_000_000:.1f}M"
-        elif amount_value >= 1_000:
-            return f"${amount_value/1_000:.0f}K"
-        else:
-            return f"${amount_value:.0f}"
-
     tweet1_parts = [f"Daily Tape: {total_filings} filing{'s' if total_filings != 1 else ''} in the last 24h."]
 
     if largest_trade:
@@ -174,14 +181,6 @@ def compose_seven_day_theme_thread(theme: Dict[str, Any]) -> List[Dict[str, Any]
     if not top_5:
         tweet1 = _trim("7-Day Theme: No significant activity in the last week.")
         return [{"text": tweet1, "media_symbol": None, "media_trade_date": None}]
-
-    def _format_amount(amount_value: float) -> str:
-        if amount_value >= 1_000_000:
-            return f"${amount_value/1_000_000:.1f}M"
-        elif amount_value >= 1_000:
-            return f"${amount_value/1_000:.0f}K"
-        else:
-            return f"${amount_value:.0f}"
 
     # Top tickers
     top_tickers_str = ", ".join([f"{t['ticker']} ({_format_amount(t['value'])})" for t in top_5[:3]])
@@ -226,14 +225,6 @@ def compose_member_spotlight_thread(spotlight: Dict[str, Any]) -> List[Dict[str,
     amount_value = spotlight.get("amount_value", 0.0)
     trans_type = spotlight.get("transaction_type", "")
     description = spotlight.get("description", "")
-
-    def _format_amount(value: float) -> str:
-        if value >= 1_000_000:
-            return f"${value/1_000_000:.1f}M"
-        elif value >= 1_000:
-            return f"${value/1_000:.0f}K"
-        else:
-            return f"${value:.0f}"
 
     action = action_verb(str(trans_type or ""))
 

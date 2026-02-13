@@ -1,4 +1,6 @@
 import sys
+import os
+import subprocess
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
@@ -65,3 +67,30 @@ def test_generate_insight_fallback(monkeypatch):
     assert out["hook"]
     assert out["interpretation"]
     assert out["question"].endswith("?")
+
+
+def test_fallback_generate_stable_across_pythonhashseed():
+    repo_root = Path(__file__).resolve().parents[1]
+    src_path = str(repo_root / "src")
+    code = """
+from insight_generator import _fallback_generate
+filing = {
+    "trades": [{"firstName": "Dana", "lastName": "Lake", "symbol": "MSFT", "type": "Purchase", "amount": "$1,001 - $15,000"}],
+    "disclosureDate": "2026-01-10",
+}
+signal = {"signalType": "FIRST_BUY", "summarySentence": "Fresh initiation."}
+context = {"combinedSummary": "Context check: limited prior history."}
+out = _fallback_generate(filing, signal, context)
+print(out["hook"])
+print(out["question"])
+""".strip()
+    env1 = os.environ.copy()
+    env1["PYTHONPATH"] = src_path
+    env1["PYTHONHASHSEED"] = "3"
+    env2 = os.environ.copy()
+    env2["PYTHONPATH"] = src_path
+    env2["PYTHONHASHSEED"] = "4"
+
+    out1 = subprocess.check_output([sys.executable, "-c", code], env=env1, text=True).strip()
+    out2 = subprocess.check_output([sys.executable, "-c", code], env=env2, text=True).strip()
+    assert out1 == out2
