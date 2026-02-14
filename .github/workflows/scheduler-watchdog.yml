@@ -40,16 +40,7 @@ jobs:
             STALE=1
           else
             AGE_MINUTES=$(
-              python - <<'PY' "${LAST_SUCCESS}"
-from datetime import datetime, timezone
-import sys
-
-value = sys.argv[1]
-now = datetime.now(timezone.utc)
-last = datetime.fromisoformat(value.replace("Z", "+00:00"))
-delta = now - last
-print(int(delta.total_seconds() // 60))
-PY
+              python -c 'from datetime import datetime, timezone; import sys; value=sys.argv[1]; now=datetime.now(timezone.utc); last=datetime.fromisoformat(value.replace("Z", "+00:00")); print(int((now-last).total_seconds()//60))' "${LAST_SUCCESS}"
             )
             if [ "${AGE_MINUTES}" -gt 45 ]; then
               STALE=1
