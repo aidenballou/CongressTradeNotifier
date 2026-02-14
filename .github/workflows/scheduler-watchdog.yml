@@ -57,18 +57,15 @@ jobs:
           )
 
           if [ "${STALE}" -eq 1 ]; then
-            BODY=$(
-              cat <<EOF
-Detected stale cadence for \`Daily Main Runner\`.
-
-- Watchdog time (UTC): ${NOW_UTC}
-- Last successful scheduled run (UTC): ${LAST_SUCCESS}
-- Computed age (minutes): ${AGE_MINUTES}
-- Threshold: age_minutes > 45
-
-Expected cadence is every 15 minutes.
-EOF
-            )
+            BODY=$(printf '%s\n' \
+              'Detected stale cadence for `Daily Main Runner`.' \
+              '' \
+              "- Watchdog time (UTC): ${NOW_UTC}" \
+              "- Last successful scheduled run (UTC): ${LAST_SUCCESS}" \
+              "- Computed age (minutes): ${AGE_MINUTES}" \
+              '- Threshold: age_minutes > 45' \
+              '' \
+              'Expected cadence is every 15 minutes.')
 
             if [ -n "${OPEN_ISSUE}" ]; then
               gh issue comment --repo "$REPO" "${OPEN_ISSUE}" --body "${BODY}"
