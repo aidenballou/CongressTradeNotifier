@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +49,22 @@ class ContentDecision:
     bundle_id: Optional[str]
     score: Optional[int]
     reason: str
+
+
+@dataclass
+class SchedulerOutcome:
+    """Structured result returned by run_scheduler for callers and logs."""
+
+    posted: bool
+    reason: str
+    window: Optional[str] = None
+    content_type: Optional[str] = None
+    posted_count: int = 0
+    bundle_id: Optional[str] = None
+    score: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 def _score_and_rank_bundles(bundles: List[Dict[str, Any]], recent_trades: List[Dict[str, Any]], now_et: datetime) -> List[tuple[Dict[str, Any], Dict[str, Any], int]]:
@@ -204,26 +220,45 @@ def _log_decision(window: str, decision: Optional[ContentDecision], candidates: 
     print(f"[Scheduler] {' '.join(fields)}")
 
 
-def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
+def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     """Main scheduler entry point. Called every cron run."""
     # Drain due queue items on every run (including outside windows / non-trading days).
-    dispatch_due_threads(now_et)
+    drain_summary = dispatch_due_threads(now_et)
+    drain_posted = int(drain_summary.get("posted", 0))
 
     window = get_current_window(now_et)
     if window is None:
         print("[Scheduler] window=None action=skip reason=not_in_window")
-        return None
+        return SchedulerOutcome(
+            posted=False,
+            reason="not_in_window",
+            window=None,
+            content_type=None,
+            posted_count=drain_posted,
+        ).to_dict()
     
     if not is_trading_day(now_et):
         print("[Scheduler] window=None action=skip reason=not_trading_day")
-        return None
+        return SchedulerOutcome(
+            posted=False,
+            reason="not_trading_day",
+            window=None,
+            content_type=None,
+            posted_count=drain_posted,
+        ).to_dict()
 
     today = now_et.strftime("%Y-%m-%d")
     posts_today = count_posts_today(today)
     
     if posts_today >= 3:
         print(f"[Scheduler] window={window} action=skip reason=daily_max_reached")
-        return None
+        return SchedulerOutcome(
+            posted=False,
+            reason="daily_max_reached",
+            window=window,
+            content_type=None,
+            posted_count=drain_posted,
+        ).to_dict()
 
     # Gather bundles
     bundles = build_bundles_from_db(now_et, hours=24)
@@ -247,18 +282,40 @@ def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
 
     if decision is None:
         _log_decision(window, None, len(unposted_bundles))
-        return None
+        return SchedulerOutcome(
+            posted=False,
+            reason="no_content_selected",
+            window=window,
+            content_type=None,
+            posted_count=drain_posted,
+        ).to_dict()
 
     # Check deduplication
     if has_been_posted(decision.content_type, decision.bundle_id, today, window):
         print(f"[Scheduler] window={window} action=skip reason=already_posted")
-        return None
+        return SchedulerOutcome(
+            posted=False,
+            reason="already_posted",
+            window=window,
+            content_type=decision.content_type,
+            posted_count=drain_posted,
+            bundle_id=decision.bundle_id,
+            score=decision.score,
+        ).to_dict()
 
     # Compose thread
     thread = _compose_for_decision(decision, now_et)
     if not thread:
         print(f"[Scheduler] window={window} action=skip reason=composition_failed")
-        return None
+        return SchedulerOutcome(
+            posted=False,
+            reason="composition_failed",
+            window=window,
+            content_type=decision.content_type,
+            posted_count=drain_posted,
+            bundle_id=decision.bundle_id,
+            score=decision.score,
+        ).to_dict()
 
     # Enqueue this decision and dispatch so it can post in this run.
     queue_unit = {
@@ -271,17 +328,29 @@ def run_scheduler(now_et: datetime) -> Optional[Dict[str, Any]]:
     }
     enqueue_signal_threads([queue_unit], now_et, force_due_now=True)
     dispatch_summary = dispatch_due_threads(now_et)
-    if dispatch_summary.get("posted", 0) < 1:
+    posted_now = int(dispatch_summary.get("posted", 0))
+    total_posted = drain_posted + posted_now
+    if posted_now < 1:
         print(f"[Scheduler] window={window} action=skip reason=post_failed_or_deferred")
-        return None
+        return SchedulerOutcome(
+            posted=False,
+            reason="post_failed_or_deferred",
+            window=window,
+            content_type=decision.content_type,
+            posted_count=total_posted,
+            bundle_id=decision.bundle_id,
+            score=decision.score,
+        ).to_dict()
 
     # Log
     _log_decision(window, decision, len(unposted_bundles))
     
-    return {
-        "window": window,
-        "content_type": decision.content_type,
-        "bundle_id": decision.bundle_id,
-        "score": decision.score,
-        "reason": decision.reason,
-    }
+    return SchedulerOutcome(
+        posted=True,
+        reason="posted",
+        window=window,
+        content_type=decision.content_type,
+        posted_count=total_posted,
+        bundle_id=decision.bundle_id,
+        score=decision.score,
+    ).to_dict()

@@ -213,7 +213,10 @@ def test_out_of_window_scheduler_run_drains_deferred_queue_item(monkeypatch):
     monkeypatch.setattr(select_content, "get_current_window", lambda _now: None)
     later_et = now_et + timedelta(minutes=3)
     result = select_content.run_scheduler(later_et)
-    assert result is None
+    assert result is not None
+    assert result["posted"] is False
+    assert result["reason"] == "not_in_window"
+    assert result["posted_count"] == 1
     assert len(fake_client.calls) == 1
     posting_strategy.cursor.execute("SELECT status FROM tweet_queue")
     assert posting_strategy.cursor.fetchone()[0] == "POSTED"

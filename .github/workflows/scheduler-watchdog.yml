@@ -1,0 +1,97 @@
+name: Scheduler Watchdog
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check scheduler cadence and alert if stale
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_TITLE: "Scheduler watchdog: Daily Main Runner appears stale"
+        run: |
+          set -euo pipefail
+
+          NOW_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          LAST_SUCCESS=$(
+            gh run list \
+              --repo "$REPO" \
+              --workflow "daily-run-main.yml" \
+              --event schedule \
+              --status completed \
+              --limit 20 \
+              --json createdAt,conclusion \
+              --jq '[.[] | select(.conclusion == "success")][0].createdAt'
+          )
+
+          STALE=0
+          AGE_MINUTES="unknown"
+          if [ -z "${LAST_SUCCESS}" ] || [ "${LAST_SUCCESS}" = "null" ]; then
+            STALE=1
+          else
+            AGE_MINUTES=$(
+              python - <<'PY' "${LAST_SUCCESS}"
+from datetime import datetime, timezone
+import sys
+
+value = sys.argv[1]
+now = datetime.now(timezone.utc)
+last = datetime.fromisoformat(value.replace("Z", "+00:00"))
+delta = now - last
+print(int(delta.total_seconds() // 60))
+PY
+            )
+            if [ "${AGE_MINUTES}" -gt 45 ]; then
+              STALE=1
+            fi
+          fi
+
+          OPEN_ISSUE=$(
+            gh issue list \
+              --repo "$REPO" \
+              --state open \
+              --search "${ISSUE_TITLE} in:title" \
+              --json number \
+              --jq '.[0].number // empty'
+          )
+
+          if [ "${STALE}" -eq 1 ]; then
+            BODY=$(
+              cat <<EOF
+Detected stale cadence for \`Daily Main Runner\`.
+
+- Watchdog time (UTC): ${NOW_UTC}
+- Last successful scheduled run (UTC): ${LAST_SUCCESS}
+- Computed age (minutes): ${AGE_MINUTES}
+- Threshold: age_minutes > 45
+
+Expected cadence is every 15 minutes.
+EOF
+            )
+
+            if [ -n "${OPEN_ISSUE}" ]; then
+              gh issue comment --repo "$REPO" "${OPEN_ISSUE}" --body "${BODY}"
+            else
+              gh issue create --repo "$REPO" --title "${ISSUE_TITLE}" --body "${BODY}" --label bug
+            fi
+
+            echo "::warning::Daily Main Runner appears stale. age_minutes=${AGE_MINUTES}"
+            exit 1
+          fi
+
+          if [ -n "${OPEN_ISSUE}" ]; then
+            gh issue comment --repo "$REPO" "${OPEN_ISSUE}" --body "Recovered at ${NOW_UTC}; scheduler cadence is healthy again."
+            gh issue close --repo "$REPO" "${OPEN_ISSUE}" --comment "Closing automatically after recovery."
+          fi
+
+          echo "Watchdog healthy. age_minutes=${AGE_MINUTES}"

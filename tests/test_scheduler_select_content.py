@@ -1,7 +1,11 @@
 """Tests for scheduler content selection behavior."""
 
 from datetime import datetime
+from pathlib import Path
+import sys
 from zoneinfo import ZoneInfo
+
+sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 import scheduler.select_content as select_content
 
@@ -130,23 +134,19 @@ def test_run_scheduler_midday_picks_top_unposted_bundle(monkeypatch):
     monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args: {"posted": 1})
     monkeypatch.setattr(
         select_content,
-        "record_post",
-        lambda content_type, bundle_id, date, window, posted_at: recorded.append(
-            (content_type, bundle_id, date, window, posted_at)
-        ),
+        "_log_decision",
+        lambda *_args, **_kwargs: recorded.append("logged"),
     )
 
     result = select_content.run_scheduler(now_et)
 
     assert result is not None
+    assert result["posted"] is True
     assert result["window"] == "MIDDAY"
     assert result["content_type"] == "ALERT"
     assert result["bundle_id"] == "bundle_b"
-    assert result["reason"] == "highest_remaining_bundle"
+    assert result["reason"] == "posted"
     assert len(recorded) == 1
-    assert recorded[0][0] == "ALERT"
-    assert recorded[0][1] == "bundle_b"
-    assert recorded[0][3] == "MIDDAY"
 
 
 def test_run_scheduler_enqueues_selected_content_as_due_now(monkeypatch):
@@ -176,11 +176,11 @@ def test_run_scheduler_enqueues_selected_content_as_due_now(monkeypatch):
         lambda filings, posted_at, **kwargs: enqueue_calls.append((filings, posted_at, kwargs)) or 1,
     )
     monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args: {"posted": 1})
-    monkeypatch.setattr(select_content, "record_post", lambda *_args, **_kwargs: None)
-
     result = select_content.run_scheduler(now_et)
 
     assert result is not None
+    assert result["posted"] is True
+    assert result["reason"] == "posted"
     assert len(enqueue_calls) == 1
     assert enqueue_calls[0][2].get("force_due_now") is True
 
@@ -217,7 +217,10 @@ def test_run_scheduler_calls_dispatch_when_outside_window(monkeypatch):
     monkeypatch.setattr(select_content, "get_current_window", lambda _now: None)
     now_et = datetime(2024, 1, 2, 10, 0, tzinfo=ET)
     result = select_content.run_scheduler(now_et)
-    assert result is None
+    assert result is not None
+    assert result["posted"] is False
+    assert result["reason"] == "not_in_window"
+    assert result["posted_count"] == 0
     assert len(dispatch_calls) == 1
     assert dispatch_calls[0] == now_et
 
@@ -234,7 +237,10 @@ def test_run_scheduler_calls_dispatch_on_non_trading_day(monkeypatch):
     monkeypatch.setattr(select_content, "is_trading_day", lambda _now: False)
     now_et = datetime(2024, 1, 6, 8, 35, tzinfo=ET)  # Saturday
     result = select_content.run_scheduler(now_et)
-    assert result is None
+    assert result is not None
+    assert result["posted"] is False
+    assert result["reason"] == "not_trading_day"
+    assert result["posted_count"] == 0
     assert len(dispatch_calls) == 1
     assert dispatch_calls[0] == now_et
 
