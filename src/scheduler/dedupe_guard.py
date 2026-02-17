@@ -79,3 +79,17 @@ def has_window_posted_today(date: str, window: str) -> bool:
         (date, window),
     )
     return cursor.fetchone() is not None
+
+
+def has_email_sent_today(date: str) -> bool:
+    """Check if the daily email summary was already sent for this date."""
+    cursor.execute(
+        "SELECT 1 FROM posted_content_log WHERE date = ? AND content_type = 'EMAIL_DAILY' LIMIT 1",
+        (date,),
+    )
+    return cursor.fetchone() is not None
+
+
+def record_email_sent(date: str, now_et: datetime) -> None:
+    """Record that the daily email summary was sent for this date."""
+    record_post("EMAIL_DAILY", None, date, "EMAIL_DAILY", now_et)

@@ -10,7 +10,7 @@ from insider import find_recent_insider_activity
 from insights import build_highlights_text, compute_trade_insights
 from notifier import run_delta
 from posting_strategy import dispatch_due_threads, enqueue_signal_threads
-from scheduler.dedupe_guard import has_been_posted
+from scheduler.dedupe_guard import has_been_posted, has_email_sent_today, record_email_sent
 from scheduler.select_content import run_scheduler
 
 # Load environment variables
@@ -171,9 +171,13 @@ def main():
         print("Daily highlights:")
         print(build_highlights_text(insights))
 
-        print("Sending email...")
-        send_summary(trades_today, insights)
-        print("Email sent!")
+        if has_email_sent_today(today):
+            print(f"Email already sent for {today}; skipping email send.")
+        else:
+            print("Sending email...")
+            send_summary(trades_today, insights)
+            record_email_sent(today, now_et)
+            print("Email sent!")
     else:
         print("No same-day disclosures for email summary.")
 
