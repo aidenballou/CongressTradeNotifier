@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -79,6 +80,18 @@ def _score_and_rank_bundles(bundles: List[Dict[str, Any]], recent_trades: List[D
     return scored
 
 
+def _fallback_order_for_window(window: str) -> List[str]:
+    """Return content types to try as fallbacks in this window, ordered by engagement prior (higher first)."""
+    try:
+        from analytics.engagement import get_engagement_priors_for_scheduler
+    except ImportError:
+        from src.analytics.engagement import get_engagement_priors_for_scheduler
+    candidates = ["DAILY_TAPE", "SEVEN_DAY_THEME"]
+    priors = [(ct, get_engagement_priors_for_scheduler(ct, window, min_samples=2)) for ct in candidates]
+    priors.sort(key=lambda x: -x[1])
+    return [ct for ct, _ in priors]
+
+
 def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
     """MORNING window: Alert > Daily Tape > 7-day Theme. Never both alert and tape."""
     
@@ -93,16 +106,17 @@ def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], t
         if score >= threshold and not has_been_posted("ALERT", bid, today, "MORNING"):
             return ContentDecision("ALERT", bid, score, "highest_scoring_bundle")
 
-    # Try Daily Tape
-    if not has_daily_tape_today(today):
-        tape = build_daily_tape(now_et)
-        if tape.get("total_filings", 0) > 0:
-            return ContentDecision("DAILY_TAPE", None, None, "daily_tape_fallback")
-
-    # Fallback to 7-day Theme
-    theme = build_seven_day_theme(now_et)
-    if theme.get("top_5_tickers_by_value") and not has_seven_day_theme_today(today):
-        return ContentDecision("SEVEN_DAY_THEME", None, None, "seven_day_theme_fallback")
+    # Fallbacks ordered by engagement prior for this window
+    order = _fallback_order_for_window("MORNING")
+    for content_type in order:
+        if content_type == "DAILY_TAPE" and not has_daily_tape_today(today):
+            tape = build_daily_tape(now_et)
+            if tape.get("total_filings", 0) > 0:
+                return ContentDecision("DAILY_TAPE", None, None, "daily_tape_fallback")
+        if content_type == "SEVEN_DAY_THEME" and not has_seven_day_theme_today(today):
+            theme = build_seven_day_theme(now_et)
+            if theme.get("top_5_tickers_by_value"):
+                return ContentDecision("SEVEN_DAY_THEME", None, None, "seven_day_theme_fallback")
 
     return None
 
@@ -267,7 +281,7 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     
     # Score and rank
     scored_bundles = _score_and_rank_bundles(unposted_bundles, recent_trades, now_et)
-    threshold = compute_threshold(len(unposted_bundles))
+    threshold = compute_threshold(len(unposted_bundles), window)
 
     # Select content based on window
     decision = None
@@ -317,6 +331,23 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
             score=decision.score,
         ).to_dict()
 
+    if os.getenv("SCHEDULER_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
+        print(f"[Scheduler] dry_run=1 would_post content_type={decision.content_type} window={window} threshold={threshold} score={decision.score}")
+        try:
+            from analytics.engagement import engagement_health_report
+        except ImportError:
+            from src.analytics.engagement import engagement_health_report
+        print(engagement_health_report())
+        return SchedulerOutcome(
+            posted=False,
+            reason="dry_run",
+            window=window,
+            content_type=decision.content_type,
+            posted_count=drain_posted,
+            bundle_id=decision.bundle_id,
+            score=decision.score,
+        ).to_dict()
+
     # Enqueue this decision and dispatch so it can post in this run.
     queue_unit = {
         "disclosureDate": today,
@@ -342,9 +373,14 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
             score=decision.score,
         ).to_dict()
 
-    # Log
+    # Log decision and engagement health summary
     _log_decision(window, decision, len(unposted_bundles))
-    
+    try:
+        from analytics.engagement import engagement_health_report
+    except ImportError:
+        from src.analytics.engagement import engagement_health_report
+    print(engagement_health_report())
+
     return SchedulerOutcome(
         posted=True,
         reason="posted",

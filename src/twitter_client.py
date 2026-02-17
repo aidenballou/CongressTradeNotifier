@@ -831,6 +831,39 @@ class TwitterClient:
 
         raise RuntimeError("Tweet post retry loop exited unexpectedly")
 
+    def get_tweet_metrics(self, tweet_ids: List[str]) -> Dict[str, Dict[str, int]]:
+        """
+        Fetch public metrics for a list of tweet IDs (Twitter API v2).
+        Returns dict mapping tweet_id -> {like_count, retweet_count, reply_count, quote_count, impression_count?}.
+        """
+        if not tweet_ids:
+            return {}
+        out: Dict[str, Dict[str, int]] = {}
+        try:
+            # API allows up to 100 IDs per request
+            batch = tweet_ids[:100]
+            response = self.client.get_tweets(
+                ids=batch,
+                tweet_fields=["public_metrics"],
+            )
+            if not response.data:
+                return out
+            for tweet in response.data:
+                tid = str(tweet.id)
+                metrics = getattr(tweet, "public_metrics", None) or {}
+                if not isinstance(metrics, dict):
+                    metrics = {k: getattr(metrics, k, 0) for k in ("like_count", "retweet_count", "reply_count", "quote_count", "impression_count")}
+                out[tid] = {
+                    "like_count": int(metrics.get("like_count", 0) or 0),
+                    "retweet_count": int(metrics.get("retweet_count", 0) or 0),
+                    "reply_count": int(metrics.get("reply_count", 0) or 0),
+                    "quote_count": int(metrics.get("quote_count", 0) or 0),
+                    "impression_count": int(metrics["impression_count"]) if metrics.get("impression_count") is not None else None,
+                }
+        except Exception as e:
+            logger.warning("get_tweet_metrics failed: %s", e)
+        return out
+
     # -------------------------
     # Chart & Price utilities
     # -------------------------

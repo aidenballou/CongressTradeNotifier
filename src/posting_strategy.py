@@ -10,10 +10,10 @@ from zoneinfo import ZoneInfo
 
 try:
     from db import conn, cursor
-    from scheduler.dedupe_guard import record_post
+    from scheduler.dedupe_guard import record_post, record_posted_tweet_ids
 except ImportError:  # pragma: no cover
     from src.db import conn, cursor
-    from src.scheduler.dedupe_guard import record_post
+    from src.scheduler.dedupe_guard import record_post, record_posted_tweet_ids
 
 TwitterClient = None
 
@@ -262,86 +262,104 @@ def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
     rows = cursor.fetchall()
     summary["pending"] = len(rows)
 
-    if not rows:
-        return summary
-
     client_cls = _get_twitter_client_cls()
     client = client_cls()
 
-    for row in rows:
-        queue_id, _queue_key, _scheduled_for, payload_json, attempt_count = row
-        cursor.execute(
-            "UPDATE tweet_queue SET status = 'POSTING', updated_at = ? WHERE id = ?",
-            (_to_iso(now_et), queue_id),
-        )
-        conn.commit()
-
-        try:
-            payload = json.loads(payload_json)
-            thread = payload.get("thread") or []
-            if not thread:
-                raise ValueError("Queue payload missing thread")
-
-            last_root = _get_metadata("last_root_posted_at")
-            if last_root:
-                last_dt = _from_iso(last_root)
-                minimum_next = last_dt + timedelta(seconds=ANTI_SPAM_SECONDS)
-                if now_et < minimum_next:
-                    _defer_queue_item(queue_id, minimum_next, now_et)
-                    summary["deferred"] += 1
-                    continue
-
-            client.post_thread(thread, min_delay_seconds=20, max_delay_seconds=60)
-
+    if rows:
+        for row in rows:
+            queue_id, _queue_key, _scheduled_for, payload_json, attempt_count = row
             cursor.execute(
-                """
-                UPDATE tweet_queue
-                SET status = 'POSTED', posted_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (_to_iso(now_et), _to_iso(now_et), queue_id),
+                "UPDATE tweet_queue SET status = 'POSTING', updated_at = ? WHERE id = ?",
+                (_to_iso(now_et), queue_id),
             )
             conn.commit()
-            _set_metadata("last_root_posted_at", _to_iso(now_et))
-            content_type = str(payload.get("content_type") or "").strip()
-            disclosure_date = str(payload.get("disclosure_date") or "").strip()
-            if content_type and disclosure_date:
-                context = payload.get("context") or {}
-                window = str(context.get("window") or "QUEUE")
-                bundle_id = context.get("bundle_id")
-                record_post(
-                    content_type=content_type,
-                    bundle_id=str(bundle_id) if bundle_id else None,
-                    date=disclosure_date,
-                    window=window,
-                    now_et=now_et,
-                )
-            summary["posted"] += 1
 
-        except Exception as exc:
-            attempts = int(attempt_count or 0) + 1
-            if attempts >= MAX_RETRIES:
+            try:
+                payload = json.loads(payload_json)
+                thread = payload.get("thread") or []
+                if not thread:
+                    raise ValueError("Queue payload missing thread")
+
+                last_root = _get_metadata("last_root_posted_at")
+                if last_root:
+                    last_dt = _from_iso(last_root)
+                    minimum_next = last_dt + timedelta(seconds=ANTI_SPAM_SECONDS)
+                    if now_et < minimum_next:
+                        _defer_queue_item(queue_id, minimum_next, now_et)
+                        summary["deferred"] += 1
+                        continue
+
+                posted_tweet_ids = client.post_thread(thread, min_delay_seconds=20, max_delay_seconds=60)
+
                 cursor.execute(
                     """
                     UPDATE tweet_queue
-                    SET status = 'FAILED', attempt_count = ?, last_error = ?, updated_at = ?
+                    SET status = 'POSTED', posted_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (attempts, str(exc)[:500], _to_iso(now_et), queue_id),
+                    (_to_iso(now_et), _to_iso(now_et), queue_id),
                 )
-                summary["failed"] += 1
-            else:
-                retry_time = now_et + timedelta(minutes=5 * attempts)
-                cursor.execute(
-                    """
-                    UPDATE tweet_queue
-                    SET status = 'PENDING', attempt_count = ?, scheduled_for = ?, last_error = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (attempts, _to_iso(retry_time), str(exc)[:500], _to_iso(now_et), queue_id),
-                )
-                summary["deferred"] += 1
-            conn.commit()
+                conn.commit()
+                _set_metadata("last_root_posted_at", _to_iso(now_et))
+                content_type = str(payload.get("content_type") or "").strip()
+                disclosure_date = str(payload.get("disclosure_date") or "").strip()
+                if content_type and disclosure_date:
+                    context = payload.get("context") or {}
+                    window = str(context.get("window") or "QUEUE")
+                    bundle_id = context.get("bundle_id")
+                    record_post(
+                        content_type=content_type,
+                        bundle_id=str(bundle_id) if bundle_id else None,
+                        date=disclosure_date,
+                        window=window,
+                        now_et=now_et,
+                    )
+                    if posted_tweet_ids:
+                        record_posted_tweet_ids(
+                            content_type=content_type,
+                            bundle_id=str(bundle_id) if bundle_id else None,
+                            date=disclosure_date,
+                            window=window,
+                            tweet_ids=posted_tweet_ids,
+                            now_et=now_et,
+                        )
+                summary["posted"] += 1
+
+            except Exception as exc:
+                attempts = int(attempt_count or 0) + 1
+                if attempts >= MAX_RETRIES:
+                    cursor.execute(
+                        """
+                        UPDATE tweet_queue
+                        SET status = 'FAILED', attempt_count = ?, last_error = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (attempts, str(exc)[:500], _to_iso(now_et), queue_id),
+                    )
+                    summary["failed"] += 1
+                else:
+                    retry_time = now_et + timedelta(minutes=5 * attempts)
+                    cursor.execute(
+                        """
+                        UPDATE tweet_queue
+                        SET status = 'PENDING', attempt_count = ?, scheduled_for = ?, last_error = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (attempts, _to_iso(retry_time), str(exc)[:500], _to_iso(now_et), queue_id),
+                    )
+                    summary["deferred"] += 1
+                conn.commit()
+
+    try:
+        from analytics.engagement import sample_due_threads
+    except ImportError:
+        from src.analytics.engagement import sample_due_threads
+    try:
+        n = sample_due_threads(client)
+        if n:
+            summary["engagement_sampled"] = n
+    except Exception as e:
+        summary["engagement_sample_error"] = str(e)[:200]
 
     return summary
 

@@ -54,6 +54,40 @@ def _has_uncertainty(text: str) -> bool:
     return any(re.search(pattern, lowered) for pattern in UNCERTAINTY_PATTERNS)
 
 
+def _hook_score(hook: str, member: str, tickers: str) -> float:
+    """
+    Deterministic quality score for a hook: prefer specificity, length in range, no generic openers.
+    Higher is better.
+    """
+    if not hook or len(hook) < 10:
+        return 0.0
+    score = 0.0
+    hook_lower = hook.lower()
+    # Prefer hooks that mention member or ticker
+    if member and member.lower() in hook_lower:
+        score += 2.0
+    for t in (tickers or "").split(","):
+        t = t.strip().upper()
+        if t and t in hook.upper():
+            score += 1.5
+            break
+    # Prefer concrete numbers ($, %, digits)
+    if re.search(r"\$|%|\d", hook):
+        score += 1.0
+    # Penalize generic openers
+    if hook_lower.startswith("congress just leaned"):
+        score -= 2.0
+    if "flow recap:" in hook_lower or "setup:" in hook_lower:
+        score -= 0.5
+    # Prefer length 60–180 chars for punch
+    n = len(hook)
+    if 60 <= n <= 180:
+        score += 1.0
+    elif 40 <= n <= 220:
+        score += 0.5
+    return max(0.0, score)
+
+
 def _enforce_contract(payload: Dict[str, str]) -> Dict[str, str]:
     hook = _sanitize_field(payload.get("hook", ""))
     interpretation = _sanitize_field(payload.get("interpretation", ""))
@@ -90,17 +124,30 @@ def _build_prompt(filing: Dict[str, Any], signal: Dict[str, Any], context: Dict[
 
     summary = str(signal.get("summarySentence") or "")
     signal_type = str(signal.get("signalType") or "OTHER")
+    member = _member_name(trades[0]) if trades else "A member"
+    symbols = [str(t.get("symbol") or t.get("ticker") or "").upper() for t in trades[:5] if str(t.get("symbol") or t.get("ticker") or "").strip()]
+    ticker_list = ", ".join(symbols[:3]) if symbols else ""
+
+    historical = (context.get("combinedSummary") or "").strip()
+    last_outcome = str(context.get("lastTradeOutcome") or "").strip()
 
     return (
         "You are writing copy for a financial Twitter account focused on congressional trading signals. "
-        "Write with human trader voice: natural, concise, and specific. "
-        "Output strict JSON only with keys hook, interpretation, question. "
+        "Write with human trader voice: natural, concise, and SPECIFIC. "
+        "Output strict JSON only with keys: hook, hook_alt (second option), interpretation, question. "
         "Rules: no bullets, no robotic phrasing, never use the word 'disclosed', each field <=240 chars, "
-        "include market implication and uncertainty, and end question with '?'."
+        "end question with '?'. "
+        "HOOK: Must be specific and attention-grabbing. Include a concrete detail: member name, ticker, or size. "
+        "Create curiosity (why now, why this trade). Avoid generic openers like 'Congress just leaned into'. "
+        "INTERPRETATION: One clear market implication; include one uncertainty phrase (could/may/might). "
+        "QUESTION: Provoke judgment or debate (e.g. 'Is this insider buying the dip or front-running a catalyst?'). "
+        "Avoid vague questions like 'Do you chase this move?'."
         f"\nSignal type: {signal_type}."
         f"\nSignal summary: {summary}"
+        f"\nMember: {member}. Tickers: {ticker_list}."
         f"\nTrades: {' | '.join(trade_lines)}"
-        f"\nHistorical context: {context.get('combinedSummary', '')}"
+        f"\nHistorical context: {historical}"
+        + (f"\nPrior outcome for context (weave in if relevant): {last_outcome}" if last_outcome else "")
     )
 
 
@@ -137,6 +184,7 @@ def _call_openai(prompt: str) -> Dict[str, str]:
     parsed = json.loads(content)
     return {
         "hook": str(parsed.get("hook", "")),
+        "hook_alt": str(parsed.get("hook_alt", "")),
         "interpretation": str(parsed.get("interpretation", "")),
         "question": str(parsed.get("question", "")),
     }
@@ -181,12 +229,30 @@ def _fallback_generate(filing: Dict[str, Any], signal: Dict[str, Any], context: 
 
 
 def generate_insight(filing: Dict[str, Any], signal: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, str]:
-    """Generate hook, interpretation, and engagement question."""
+    """Generate hook, interpretation, and engagement question; pick best of multiple hooks by score."""
+
+    trades = _extract_trades(filing)
+    member = _member_name(trades[0]) if trades else ""
+    symbols = [str(t.get("symbol") or t.get("ticker") or "").upper() for t in trades if str(t.get("symbol") or t.get("ticker") or "").strip()]
+    tickers = ", ".join(symbols[:3]) if symbols else ""
 
     prompt = _build_prompt(filing, signal, context)
     try:
         response = _call_openai(prompt)
     except Exception:
         response = _fallback_generate(filing, signal, context)
+
+    hook_alt = (response.get("hook_alt") or "").strip()
+    hook_main = (response.get("hook") or "").strip()
+    if hook_alt and hook_main:
+        s_main = _hook_score(hook_main, member, tickers)
+        s_alt = _hook_score(hook_alt, member, tickers)
+        if s_alt > s_main:
+            response = {**response, "hook": hook_alt}
+        else:
+            response = {**response, "hook": hook_main}
+    elif hook_alt and not hook_main:
+        response = {**response, "hook": hook_alt}
+    response.pop("hook_alt", None)
 
     return _enforce_contract(response)

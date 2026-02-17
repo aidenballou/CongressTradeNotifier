@@ -30,6 +30,23 @@ def _trim(text: str, limit: int = MAX_TWEET_LEN) -> str:
     return value[: limit - 1].rstrip() + "…"
 
 
+def _quality_check_tweet1(text: str) -> str:
+    """Lightweight checks: trim to limit, reduce obvious repetition."""
+    out = " ".join((text or "").split())
+    if len(out) > MAX_TWEET_LEN:
+        out = out[: MAX_TWEET_LEN - 1].rstrip() + "…"
+    # Avoid duplicate phrase (e.g. "Flow recap: ... Flow recap:")
+    if "Flow recap:" in out and out.count("Flow recap:") > 1:
+        out = out.replace("Flow recap:", "", 1).strip()
+        if out.startswith("Flow recap:"):
+            out = out[len("Flow recap:") :].strip()
+    if "Setup:" in out and out.count("Setup:") > 1:
+        out = out.replace("Setup:", "", 1).strip()
+        if out.startswith("Setup:"):
+            out = out[len("Setup:") :].strip()
+    return _trim(out)
+
+
 def _trade_blurb(trades: List[Dict[str, Any]]) -> str:
     segments = []
     for trade in trades[:4]:
@@ -78,6 +95,7 @@ def compose_thread(
     hook = str(insight.get("hook") or "")
     interpretation = str(insight.get("interpretation") or "")
     question = str(insight.get("question") or "")
+    last_outcome = str(context.get("lastTradeOutcome") or "").strip()
 
     signal_type = str(signal.get("signalType") or "OTHER")
     score = stats.get("score") or signal.get("diagnostics", {}).get("score") or "-"
@@ -92,6 +110,11 @@ def compose_thread(
     else:
         tweet1 = f"{hook} Setup: {member} {trade_blurb}. {interpretation} {question}"
 
+    if last_outcome and len(tweet1) + len(last_outcome) + 2 <= MAX_TWEET_LEN:
+        tweet1 = f"{tweet1} {last_outcome}"
+
+    tweet1 = _quality_check_tweet1(tweet1)
+
     stat_line_options = [
         f"Signal score {score}/10 with {signal_type.lower()} characteristics.",
         f"Signal engine tagged this as {signal_type.lower()} with conviction score {score}.",
@@ -103,7 +126,9 @@ def compose_thread(
         f"Chart watch on {symbol or 'the lead ticker'}: {stat_line} Trade count in filing: {len(trades)}."
     )
 
-    historical = str(context.get("combinedSummary") or context.get("lastTradeOutcome") or "")
+    historical = str(context.get("combinedSummary") or "")
+    if last_outcome and not historical:
+        historical = last_outcome
     tail_options = [
         "History helps frame it, not predict it.",
         "Use this as context, not certainty.",
@@ -111,16 +136,19 @@ def compose_thread(
     ]
     tweet3 = _trim(f"{historical} {tail_options[mode]}")
 
+    # Put strongest hook first with visual: attach chart to tweet 1 for higher engagement
+    media_date = str(trades[0].get("transactionDate") or trades[0].get("transaction_date") or "") if trades else None
+
     return [
         {
-            "text": _trim(tweet1),
-            "media_symbol": None,
-            "media_trade_date": None,
+            "text": tweet1,
+            "media_symbol": symbol or None,
+            "media_trade_date": media_date or None,
         },
         {
             "text": tweet2,
-            "media_symbol": symbol or None,
-            "media_trade_date": str(trades[0].get("transactionDate") or trades[0].get("transaction_date") or "") or None,
+            "media_symbol": None,
+            "media_trade_date": None,
         },
         {
             "text": tweet3,

@@ -19,6 +19,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE_TITLE: "Scheduler watchdog: Daily Main Runner appears stale"
+          WARNING_MINUTES: "90"
+          FAILURE_MINUTES: "120"
         run: |
           set -euo pipefail
 
@@ -34,16 +36,21 @@ jobs:
               --jq '[.[] | select(.conclusion == "success")][0].createdAt'
           )
 
-          STALE=0
+          STALE_WARNING=0
+          STALE_FAILURE=0
           AGE_MINUTES="unknown"
           if [ -z "${LAST_SUCCESS}" ] || [ "${LAST_SUCCESS}" = "null" ]; then
-            STALE=1
+            STALE_WARNING=1
+            STALE_FAILURE=1
           else
             AGE_MINUTES=$(
-              python -c 'from datetime import datetime, timezone; import sys; value=sys.argv[1]; now=datetime.now(timezone.utc); last=datetime.fromisoformat(value.replace("Z", "+00:00")); print(int((now-last).total_seconds()//60))' "${LAST_SUCCESS}"
+              python3 -c 'from datetime import datetime, timezone; import sys; value=sys.argv[1]; now=datetime.now(timezone.utc); last=datetime.fromisoformat(value.replace("Z", "+00:00")); print(int((now-last).total_seconds()//60))' "${LAST_SUCCESS}"
             )
-            if [ "${AGE_MINUTES}" -gt 45 ]; then
-              STALE=1
+            if [ "${AGE_MINUTES}" -gt "${FAILURE_MINUTES}" ]; then
+              STALE_WARNING=1
+              STALE_FAILURE=1
+            elif [ "${AGE_MINUTES}" -gt "${WARNING_MINUTES}" ]; then
+              STALE_WARNING=1
             fi
           fi
 
@@ -56,25 +63,41 @@ jobs:
               --jq '.[0].number // empty'
           )
 
-          if [ "${STALE}" -eq 1 ]; then
+          if [ "${STALE_FAILURE}" -eq 1 ]; then
             BODY=$(printf '%s\n' \
-              'Detected stale cadence for `Daily Main Runner`.' \
+              'Detected **severe** stale cadence for `Daily Main Runner`.' \
               '' \
               "- Watchdog time (UTC): ${NOW_UTC}" \
               "- Last successful scheduled run (UTC): ${LAST_SUCCESS}" \
               "- Computed age (minutes): ${AGE_MINUTES}" \
-              '- Threshold: age_minutes > 45' \
+              "- Warning threshold: ${WARNING_MINUTES} min" \
+              "- Failure threshold: ${FAILURE_MINUTES} min" \
               '' \
               'Expected cadence is every 15 minutes.')
-
             if [ -n "${OPEN_ISSUE}" ]; then
               gh issue comment --repo "$REPO" "${OPEN_ISSUE}" --body "${BODY}"
             else
               gh issue create --repo "$REPO" --title "${ISSUE_TITLE}" --body "${BODY}" --label bug
             fi
-
-            echo "::warning::Daily Main Runner appears stale. age_minutes=${AGE_MINUTES}"
+            echo "::error::Daily Main Runner severely stale. age_minutes=${AGE_MINUTES} (threshold ${FAILURE_MINUTES})"
             exit 1
+          fi
+
+          if [ "${STALE_WARNING}" -eq 1 ]; then
+            BODY=$(printf '%s\n' \
+              'Detected moderate delay for `Daily Main Runner` (warning only).' \
+              '' \
+              "- Watchdog time (UTC): ${NOW_UTC}" \
+              "- Last successful scheduled run (UTC): ${LAST_SUCCESS}" \
+              "- Computed age (minutes): ${AGE_MINUTES}" \
+              "- Warning threshold: ${WARNING_MINUTES} min" \
+              '' \
+              'Workflow succeeds; will fail only if age exceeds failure threshold.')
+            if [ -z "${OPEN_ISSUE}" ]; then
+              gh issue create --repo "$REPO" --title "${ISSUE_TITLE}" --body "${BODY}" --label bug
+            fi
+            echo "::warning::Daily Main Runner delayed. age_minutes=${AGE_MINUTES} (warning threshold ${WARNING_MINUTES})"
+            exit 0
           fi
 
           if [ -n "${OPEN_ISSUE}" ]; then

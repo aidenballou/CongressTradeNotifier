@@ -81,4 +81,38 @@ cursor.execute("""
   CREATE INDEX IF NOT EXISTS idx_posted_content_alert_bundle
   ON posted_content_log(content_type, bundle_id);
 """)
+
+# Posted thread tweet IDs for engagement backfill (keyed by content_hash from posted_content_log)
+cursor.execute("""
+  CREATE TABLE IF NOT EXISTS posted_thread_ids (
+    content_hash TEXT PRIMARY KEY,
+    tweet_ids_json TEXT NOT NULL,
+    posted_at TEXT NOT NULL
+  );
+""")
+
+# Engagement metrics per tweet at fixed time windows (e.g. +1h, +24h)
+cursor.execute("""
+  CREATE TABLE IF NOT EXISTS engagement_metrics (
+    id INTEGER PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    tweet_id TEXT NOT NULL,
+    snapshot_window TEXT NOT NULL,
+    sampled_at TEXT NOT NULL,
+    like_count INTEGER NOT NULL DEFAULT 0,
+    retweet_count INTEGER NOT NULL DEFAULT 0,
+    reply_count INTEGER NOT NULL DEFAULT 0,
+    quote_count INTEGER NOT NULL DEFAULT 0,
+    impression_count INTEGER,
+    UNIQUE (content_hash, tweet_id, snapshot_window)
+  );
+""")
+cursor.execute("""
+  CREATE INDEX IF NOT EXISTS idx_engagement_content_hash
+  ON engagement_metrics(content_hash);
+""")
+cursor.execute("""
+  CREATE INDEX IF NOT EXISTS idx_engagement_snapshot_window
+  ON engagement_metrics(snapshot_window);
+""")
 conn.commit()

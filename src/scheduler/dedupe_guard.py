@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 try:
     from db import conn, cursor
@@ -40,6 +41,27 @@ def record_post(content_type: str, bundle_id: Optional[str], date: str, window: 
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         (content_type, bundle_id, date, window, content_hash, created_at),
+    )
+    conn.commit()
+
+
+def record_posted_tweet_ids(
+    content_type: str,
+    bundle_id: Optional[str],
+    date: str,
+    window: str,
+    tweet_ids: List[str],
+    now_et: datetime,
+) -> None:
+    """Store tweet IDs for a posted thread so engagement can be sampled later."""
+    content_hash = _content_hash(content_type, bundle_id, date, window)
+    posted_at = now_et.astimezone().isoformat()
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO posted_thread_ids (content_hash, tweet_ids_json, posted_at)
+        VALUES (?, ?, ?)
+        """,
+        (content_hash, json.dumps(tweet_ids), posted_at),
     )
     conn.commit()
 
