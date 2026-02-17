@@ -1,38 +1,60 @@
-# CongressTradeNotifier
+# Insiders
 
-CongressTradeNotifier watches the official U.S. House and Senate trade disclosures, persists any new activity, and turns it into
-shareable updates. The project pulls data from the Financial Modeling Prep (FMP) API, deduplicates the filings in a local
-SQLite database, emails a daily HTML digest, and crafts polished tweets (optionally with charts and performance stats) for
-social media distribution.
+Insiders tracks U.S. congressional trade disclosures, stores only net-new filings in SQLite, and turns those filings into:
 
-Follow here: https://x.com/theinsidescope
+- daily email summaries,
+- scheduled X (Twitter) threads,
+- and engagement-focused content variants (alerts, daily tape, 7-day themes, and member spotlights).
 
-## Highlights
+The pipeline runs in Eastern Time and is designed for unattended CI scheduling.
 
-- **Automated trade ingestion** – Fetches the latest disclosures for both chambers via the FMP API and records only new
-  transactions in `trades.sqlite3`.
-- **Daily operator workflow** – `src/main.py` coordinates the full pipeline: fetch trades, persist, email a same-day summary,
-  and publish tweets.
-- **Rich Twitter automation** – Generates engaging single- or multi-trade posts, applies heuristics for tone and hashtags, can
-  attach price charts, and retries transient API failures.
-- **Email reporting** – Sends an HTML table that highlights each disclosure for the day, ready to drop into an inbox.
-- **Corporate insider context** – Cross-references FMP's latest insider filings to spotlight overlapping tickers directly in the daily highlights.
-- **Developer tooling** – Includes a tweet preview script and pytest suite for validating copy, formatting, and Twitter client
-  behavior.
+Follow: https://x.com/theinsidescope
 
-## Project structure
+## What This Project Does
+
+- **Ingests disclosures** from Financial Modeling Prep (House + Senate endpoints).
+- **Deduplicates and persists trades** in `trades.sqlite3`.
+- **Builds insights** using rule-based analytics and optional OpenAI-generated copy.
+- **Schedules posts by market windows** (morning, midday, power hour, evening).
+- **Queues and dispatches threads safely** with anti-spam spacing and retry logic.
+- **Emails same-day disclosure digests** for operational visibility.
+- **Samples post engagement** to influence future scheduler choices.
+
+## Runtime Flow
+
+`src/main.py` is the primary entrypoint:
+
+1. Fetches latest filings and writes only unseen trades.
+2. Builds same-day highlights and sends an email (once per day).
+3. Runs the scheduler to select and publish due content.
+4. If scheduler is out-of-window or selects nothing, can post a fallback summary thread.
+
+Each run logs a concise execution summary to stdout (delta stats, scheduler decision, and publish outcome).
+
+## Project Layout
 
 ```
 ├── src/
-│   ├── main.py              # Entry point that runs the daily workflow
-│   ├── fmp_client.py        # Financial Modeling Prep API helpers
-│   ├── notifier.py          # Persistence + dedupe logic
-│   ├── emailer.py           # HTML summary email generator
-│   ├── twitter_client.py    # Tweet formatting, media creation, and posting
-│   └── db.py                # SQLite schema + shared connection
+│   ├── main.py                     # Daily orchestrator
+│   ├── notifier.py                 # Ingestion + dedupe persistence
+│   ├── fmp_client.py               # FMP API helpers
+│   ├── db.py                       # SQLite schema + migrations
+│   ├── emailer.py                  # HTML email summary delivery
+│   ├── twitter_client.py           # X client, thread posting, chart generation
+│   ├── posting_strategy.py         # Queueing, dispatch, anti-spam, retries
+│   ├── insight_generator.py        # OpenAI-backed hook/interpretation/question generation
+│   ├── tweet_composer.py           # Thread composition for each content type
+│   ├── trade_analyzer.py           # Filing scoring and diagnostics
+│   ├── historical_context.py       # Historical context builder
+│   ├── insights.py                 # Email/highlight insight helpers
+│   ├── analytics/                  # Rollups, bundling, engagement priors
+│   └── scheduler/                  # Window evaluation, thresholding, dedupe guards
 ├── scripts/
-│   └── preview_tweet.py     # CLI to preview tweets or charts without new trades
-├── tests/                   # Pytest suite for Twitter automation
+│   └── preview_tweet.py            # Local tweet/chart preview utility
+├── tests/                          # Unit tests for scheduler, posting, composition, insights
+├── .github/workflows/
+│   ├── daily-run-main.yml          # Main scheduled runner (every 15 min)
+│   └── scheduler-watchdog.yml      # Cadence watchdog + issue alerting
 ├── requirements.txt
 └── README.md
 ```
@@ -40,10 +62,9 @@ Follow here: https://x.com/theinsidescope
 ## Requirements
 
 - Python 3.9+
-- Dependencies listed in `requirements.txt` (`requests`, `python-dotenv`, `tweepy`, `matplotlib`, `pytest`, `pytest-mock`,
-  `yfinance`).
+- Dependencies from `requirements.txt`
 
-Install packages with:
+Install:
 
 ```bash
 pip install -r requirements.txt
@@ -51,112 +72,105 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Environment variables (typically placed in a `.env` file) control API access, email delivery, and Twitter automation. The
-application automatically loads them via `python-dotenv`.
+Set environment variables (typically in `.env` locally and as repository secrets in CI).
 
-### Core data sources
+### Required for ingestion
 
-| Variable      | Purpose                                                                                        |
-| ------------- | ---------------------------------------------------------------------------------------------- |
-| `FMP_API_KEY` | Financial Modeling Prep API key used for trade ingestion, performance stats, and price charts. |
+| Variable | Purpose |
+| --- | --- |
+| `FMP_API_KEY` | Financial Modeling Prep API key for disclosures and market data. |
 
-### Email delivery
+### Required for email
 
-| Variable          | Purpose                                           |
-| ----------------- | ------------------------------------------------- |
-| `SMTP_HOST`       | SMTP server hostname.                             |
-| `SMTP_PORT`       | SMTP server port.                                 |
-| `SMTP_USER`       | SMTP username / from address.                     |
-| `SMTP_PASS`       | SMTP password or app-specific password.           |
-| `EMAIL_RECIPIENT` | Where the daily HTML summary should be delivered. |
+| Variable | Purpose |
+| --- | --- |
+| `SMTP_HOST` | SMTP server hostname. |
+| `SMTP_PORT` | SMTP server port. |
+| `SMTP_USER` | SMTP username / sender. |
+| `SMTP_PASS` | SMTP password or app password. |
+| `EMAIL_RECIPIENT` | Recipient of daily HTML summaries. |
 
-### Twitter automation
+### Required for posting to X (Twitter)
 
-| Variable                | Purpose                                                                                               |
-| ----------------------- | ----------------------------------------------------------------------------------------------------- |
-| `TWITTER_API_KEY`       | X (Twitter) API consumer key.                                                                         |
-| `TWITTER_API_SECRET`    | X (Twitter) API consumer secret.                                                                      |
-| `TWITTER_ACCESS_TOKEN`  | X (Twitter) access token for the posting account.                                                     |
-| `TWITTER_ACCESS_SECRET` | X (Twitter) access token secret.                                                                      |
-| `TWITTER_ATTACH_CHART`  | Optional (`true`/`false`). Toggle automatic price chart attachments (defaults to `true`).             |
-| `TWITTER_STYLE`         | Optional (`engaging` or `classic`). Selects the copywriting style for posts (defaults to `engaging`). |
+| Variable | Purpose |
+| --- | --- |
+| `TWITTER_API_KEY` | Consumer API key. |
+| `TWITTER_API_SECRET` | Consumer API secret. |
+| `TWITTER_ACCESS_TOKEN` | Access token. |
+| `TWITTER_ACCESS_SECRET` | Access token secret. |
 
-> Tip: When running in CI (GitHub Actions, cron, etc.) export these values as secrets so the workflow can authenticate without
-> exposing credentials.
+### Optional feature flags / tuning
 
-## Running the notifier
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TWITTER_ATTACH_CHART` | `true` | Attach generated price charts when possible. |
+| `TWITTER_STYLE` | `engaging` | Tweet style (`engaging` or `classic`). |
+| `OPENAI_API_KEY` | unset | Enables LLM insight generation for scheduler content. |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | Model used by `insight_generator.py`. |
+| `SCHEDULER_DRY_RUN` | `false` | Select content without posting. |
+| `SCHEDULER_FALLBACK_ENABLED` | `true` | Allow fallback summary posting when scheduler does not post. |
+| `SCHEDULER_FALLBACK_MODE` | `summary` | Fallback mode selector (currently summary mode). |
 
-Execute the full workflow once per day (manually or via a scheduler):
+## Running Locally
+
+Run one full cycle:
 
 ```bash
 python src/main.py
 ```
 
-This command will:
-
-1. Download the most recent Senate and House transactions from FMP.
-2. Deduplicate the data and append any new filings to `trades.sqlite3`.
-3. Email an HTML table summarizing disclosures filed **today** (Eastern Time).
-4. Post tweets for each member's activity, bundling multiple trades into a single thread-friendly update. Price charts are
-   attached when enabled and market data is available.
-
-All output is logged to stdout, making it easy to monitor from cron or GitHub Actions logs. The SQLite database acts as state,
-so repeated executions only act on new filings.
-
-## Previewing tweets & charts locally
-
-Use the helper script to inspect copy before posting or to experiment with chart generation:
-
-```bash
-python scripts/preview_tweet.py --from-db      # Preview most recent DB trade
-python scripts/preview_tweet.py --sample       # Preview using a built-in sample trade
-python scripts/preview_tweet.py --from-db --chart  # Also render and save a PNG price chart
-python scripts/preview_tweet.py --from-db --post   # Post the preview to Twitter (counts against API quota)
-```
-
-The preview respects your environment configuration (style, chart toggles, API credentials). Charts require `matplotlib` and
-will fall back to yfinance if FMP historical endpoints fail.
-
-## Data storage
-
-- Trade history is stored in `trades.sqlite3` next to the source code. The schema enforces uniqueness on the combination of
-  ticker, disclosure date, transaction date, and amount to prevent duplicates.
-- Metadata such as last run timestamps can be added via the `metadata` table if needed for future automation.
-
-Back up the database if you plan to redeploy the notifier or analyze historical trades elsewhere.
-
-## Testing
-
-Run the automated tests to validate the Twitter client logic:
+Common local checks:
 
 ```bash
 pytest
+python scripts/preview_tweet.py --from-db
+python scripts/preview_tweet.py --from-db --chart
 ```
 
-The suite mocks API clients to verify initialization, tweet formatting, hashtag selection, and error handling behavior without
-making network calls.
+To preview without DB data:
 
-## Verification before production
+```bash
+python scripts/preview_tweet.py --sample
+```
 
-Before re-enabling or increasing workflow frequency, confirm:
+## Scheduler Behavior
 
-1. **Test suite** – `pytest tests/` (exclude `test_x_api_live.py` if no Twitter env). All tests should pass.
-2. **Dedupe idempotency** – Run `python src/main.py` twice with no new disclosures in between; the second run should log `inserted=0` in the Delta line (re-running with unchanged data yields no new rows). For scheduled runs, the workflow restores `trades.sqlite3` from the previous run’s artifact, so two consecutive workflow runs (e.g. via **Actions → Daily Main Runner → Run workflow** twice) should also show `inserted=0` on the second run when there are no new filings.
-3. **Queue key stability** – Same filing payload must produce the same queue key across runs (tests in `test_posting_strategy.py` assert this).
+The scheduler is window-aware (ET) and runs selection logic for:
 
-## Scheduling ideas
+- `MORNING` (08:35 target),
+- `MIDDAY` (12:10 target),
+- `POWER_HOUR` (15:50 target),
+- `EVENING` (19:30 target),
 
-- **Cron job** – Run `python src/main.py` daily after markets close to capture fresh filings.
-- **GitHub Actions** – Create a workflow that checks out the repo, installs dependencies, loads secrets, and invokes the script.
-- **Containerized task** – Package the project in Docker and deploy it to your preferred scheduler (ECS, Cloud Run, etc.).
+with tolerance around each target time. It enforces:
+
+- per-window de-duplication,
+- daily post limits,
+- anti-spam spacing between root posts,
+- and queue-based retries for transient posting failures.
+
+If no scheduler post occurs for a run, fallback summary posting can be enabled via environment flags.
+
+## CI Automation
+
+- `daily-run-main.yml` runs every 15 minutes, restores the previous DB artifact, executes `src/main.py`, then uploads the updated database artifact.
+- `scheduler-watchdog.yml` checks run cadence hourly and opens/comments/closes a GitHub issue if the main workflow appears stale.
+
+## Database Notes
+
+State is stored in `trades.sqlite3`, including:
+
+- `trades` (canonical filings + parsed amounts),
+- `tweet_queue` (pending/posted/failed thread jobs),
+- `posted_content_log` (dedupe guard),
+- `posted_thread_ids` and `engagement_metrics` (post-performance sampling),
+- `metadata` (operational markers like last root post timestamp).
+
+Because this DB is stateful, repeated runs are idempotent for unchanged source data.
 
 ## Troubleshooting
 
-- Missing API keys or SMTP credentials cause the corresponding subsystem to skip its work while logging a helpful warning.
-- When the Twitter client encounters transient errors (rate limits, network hiccups) it retries with exponential backoff before
-  surfacing the failure.
-- Chart generation requires both `matplotlib` and recent price data. If unavailable the tweet still posts without media.
-
----
-
-Built for following U.S. Congressional trades and sharing them quickly with your audience.
+- Missing credentials will skip the corresponding subsystem and log the reason.
+- Chart generation gracefully falls back to alternate market data sources when possible.
+- Posting failures are retried with backoff and eventually marked failed in queue state.
+- Use `SCHEDULER_DRY_RUN=true` to validate selection behavior without publishing.
