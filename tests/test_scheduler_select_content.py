@@ -125,13 +125,13 @@ def test_run_scheduler_midday_picks_top_unposted_bundle(monkeypatch):
             (bundles[1], {}, 8),
         ],
     )
-    monkeypatch.setattr(select_content, "compute_threshold", lambda _count: 7)
+    monkeypatch.setattr(select_content, "compute_threshold", lambda _count, _window=None: 7)
     monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
     monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
     monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
-    monkeypatch.setattr(select_content, "_compose_for_decision", lambda *_args: [{"text": "ok"}])
+    monkeypatch.setattr(select_content, "_compose_for_decision", lambda *_args, **_kwargs: [{"text": "ok"}])
     monkeypatch.setattr(select_content, "enqueue_signal_threads", lambda *_args, **_kwargs: 1)
-    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args: {"posted": 1})
+    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args, **_kwargs: {"posted": 1})
     monkeypatch.setattr(
         select_content,
         "_log_decision",
@@ -161,21 +161,21 @@ def test_run_scheduler_enqueues_selected_content_as_due_now(monkeypatch):
     monkeypatch.setattr(select_content, "filter_unposted", lambda bundles, _today: bundles)
     monkeypatch.setattr(select_content, "fetch_recent_trades", lambda days, now_et: [])
     monkeypatch.setattr(select_content, "_score_and_rank_bundles", lambda *_args: [({"id": "bundle_a"}, {}, 9)])
-    monkeypatch.setattr(select_content, "compute_threshold", lambda _count: 7)
+    monkeypatch.setattr(select_content, "compute_threshold", lambda _count, _window=None: 7)
     monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
     monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
     monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
     monkeypatch.setattr(
         select_content,
         "_compose_for_decision",
-        lambda *_args: [{"text": "ok", "media_symbol": None, "media_trade_date": None}],
+        lambda *_args, **_kwargs: [{"text": "ok", "media_symbol": None, "media_trade_date": None}],
     )
     monkeypatch.setattr(
         select_content,
         "enqueue_signal_threads",
         lambda filings, posted_at, **kwargs: enqueue_calls.append((filings, posted_at, kwargs)) or 1,
     )
-    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args: {"posted": 1})
+    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args, **_kwargs: {"posted": 1})
     result = select_content.run_scheduler(now_et)
 
     assert result is not None

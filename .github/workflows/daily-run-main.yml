@@ -37,12 +37,32 @@ jobs:
           echo "run_id=$PREV" >> $GITHUB_OUTPUT
 
       - name: Restore trades database from previous run
+        id: restore-db
         if: steps.get-prev-run.outputs.run_id != ''
         uses: actions/download-artifact@v4
         with:
           name: trades-db
           run-id: ${{ steps.get-prev-run.outputs.run_id }}
         continue-on-error: true
+
+      - name: Restore email lock files
+        uses: actions/cache/restore@v4
+        with:
+          path: .email_sent_*.lock
+          key: email-locks-${{ github.run_id }}
+          restore-keys: |
+            email-locks-
+
+      - name: Check DB restoration status
+        id: db-status
+        run: |
+          if [ -f trades.sqlite3 ]; then
+            echo "db_exists=true" >> $GITHUB_OUTPUT
+            echo "DB restored from previous run"
+          else
+            echo "db_exists=false" >> $GITHUB_OUTPUT
+            echo "WARNING: No DB from previous run; starting fresh"
+          fi
 
       - name: Run main.py
         env:
@@ -57,12 +77,21 @@ jobs:
           TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
           TWITTER_ACCESS_SECRET: ${{ secrets.TWITTER_ACCESS_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DB_RESTORED: ${{ steps.db-status.outputs.db_exists }}
         run: python src/main.py
 
       - name: Upload trades database artifact
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trades-db
           path: trades.sqlite3
           retention-days: 90
+
+      - name: Save email lock files
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .email_sent_*.lock
+          key: email-locks-${{ github.run_id }}
+        continue-on-error: true

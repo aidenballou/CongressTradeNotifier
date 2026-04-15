@@ -129,6 +129,7 @@ SECTOR_TO_PROXY = {
     "communication services": "XLC",
     "materials": "XLB",
     "defensive": "XLP",
+    "other": "SPY",
 }
 
 

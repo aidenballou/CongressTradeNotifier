@@ -161,7 +161,7 @@ class TestTwitterClient:
         assert client._get_sector_hashtag('Johnson & Johnson Healthcare') == '#Healthcare'
         assert client._get_sector_hashtag('Exxon Mobil Energy Corp') == '#Energy'
         assert client._get_sector_hashtag('Lockheed Martin Defense Corp') == '#Defense'
-        assert client._get_sector_hashtag('Random Company Inc') == '#Investing'
+        assert client._get_sector_hashtag('Random Company Inc') == '#Congress'
     
     @patch.dict('os.environ', {
         'TWITTER_API_KEY': 'test_key',

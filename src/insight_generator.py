@@ -94,7 +94,16 @@ def _enforce_contract(payload: Dict[str, str]) -> Dict[str, str]:
     question = _sanitize_field(payload.get("question", ""))
 
     if not _has_uncertainty(interpretation):
-        interpretation = _sanitize_field(f"{interpretation} It could keep running, or fade fast if momentum breaks.")
+        _uncertainty_variants = [
+            "It could keep running, or fade fast if momentum breaks.",
+            "Whether this holds may depend on how the broader tape reacts.",
+            "Risk of reversal is always on the table if sentiment shifts.",
+            "This might signal conviction, but follow-through is never guaranteed.",
+            "If the trade is right the payoff could be quick, but the thesis can break just as fast.",
+        ]
+        _u_seed = interpretation[:20] if interpretation else "x"
+        _u_idx = sum(ord(c) for c in _u_seed) % len(_uncertainty_variants)
+        interpretation = _sanitize_field(f"{interpretation} {_uncertainty_variants[_u_idx]}")
 
     if not question.endswith("?"):
         question = _sanitize_field(question.rstrip(".! ") + "?")

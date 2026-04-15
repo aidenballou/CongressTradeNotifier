@@ -12,7 +12,7 @@ cursor.execute("""
     owner TEXT,
     asset_description TEXT,
     asset_type TEXT,
-    amount REAL,
+    amount TEXT,
     transaction_type TEXT,
     member_name TEXT,
     comment TEXT,

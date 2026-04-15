@@ -6,11 +6,12 @@ def test_daily_runner_cron_is_every_15_minutes():
     assert 'cron: "*/15 * * * *"' in workflow
 
 
-def test_scheduler_watchdog_workflow_exists_and_checks_45_minute_staleness():
+def test_scheduler_watchdog_workflow_exists_and_checks_staleness():
     workflow_path = Path(".github/workflows/scheduler-watchdog.yml")
     assert workflow_path.exists()
 
     workflow = workflow_path.read_text()
     assert 'cron: "7 * * * *"' in workflow
     assert "Daily Main Runner appears stale" in workflow
-    assert "age_minutes > 45" in workflow
+    assert 'WARNING_MINUTES' in workflow
+    assert 'FAILURE_MINUTES' in workflow

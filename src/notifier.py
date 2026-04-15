@@ -65,7 +65,7 @@ def store_new_trades(trades):
                 amount_raw,
                 amount_val,
                 t.get("type"),
-                (t.get("firstName") or "") + " " + (t.get("lastName") or ""),
+                ((t.get("firstName") or "") + " " + (t.get("lastName") or "")).strip(),
                 t.get("comment"),
                 t.get("link"),
             ),

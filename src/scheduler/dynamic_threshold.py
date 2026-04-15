@@ -8,20 +8,19 @@ from typing import Optional
 def compute_threshold(bundles_today: int, window: Optional[str] = None) -> Optional[int]:
     """
     Compute alert threshold based on number of bundles available today.
-    Stricter defaults so only higher-quality signals get ALERT treatment.
     Optionally nudge up when ALERT has underperformed in this window (engagement prior).
     
     Returns:
-        - 8 if bundles_today >= 2 (more selective)
-        - 6 if bundles_today == 1 (standard HIGH threshold)
+        - 7 if bundles_today >= 2 (more selective with multiple options)
+        - 5 if bundles_today == 1 (standard HIGH threshold)
         - None if bundles_today == 0 (alerts disabled)
         - +1 if window provided and engagement prior for ALERT in this window is low
     """
     base = None
     if bundles_today >= 2:
-        base = 8
+        base = 7
     elif bundles_today == 1:
-        base = 6
+        base = 5
     else:
         return None
 

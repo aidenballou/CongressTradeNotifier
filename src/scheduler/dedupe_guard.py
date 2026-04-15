@@ -103,6 +103,21 @@ def has_window_posted_today(date: str, window: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def has_member_spotlight_recent(member_name: str, days: int = 7) -> bool:
+    """Check if this member had a spotlight within the last N days."""
+    cursor.execute(
+        """
+        SELECT 1 FROM posted_content_log
+        WHERE content_type = 'MEMBER_SPOTLIGHT'
+          AND bundle_id = ?
+          AND date >= date('now', ?)
+        LIMIT 1
+        """,
+        (member_name, f"-{days} days"),
+    )
+    return cursor.fetchone() is not None
+
+
 def has_email_sent_today(date: str) -> bool:
     """Check if the daily email summary was already sent for this date."""
     cursor.execute(

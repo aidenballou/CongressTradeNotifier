@@ -45,27 +45,25 @@ def test_get_current_window_exact_times():
 
 
 def test_get_current_window_within_tolerance():
-    """Test window detection within tolerance."""
-    # Morning window + 5 minutes (within 8 min tolerance)
+    """Test window detection within tolerance (14 min)."""
     morning_plus = datetime(2024, 1, 1, 8, 40, 0, tzinfo=ET)
     assert get_current_window(morning_plus) == "MORNING"
 
-    # Morning window - 7 minutes (within tolerance)
-    morning_minus = datetime(2024, 1, 1, 8, 28, 0, tzinfo=ET)
+    morning_minus = datetime(2024, 1, 1, 8, 22, 0, tzinfo=ET)
     assert get_current_window(morning_minus) == "MORNING"
 
-    # Midday window + 8 minutes (at tolerance edge)
-    midday_plus = datetime(2024, 1, 1, 12, 18, 0, tzinfo=ET)
+    midday_plus = datetime(2024, 1, 1, 12, 24, 0, tzinfo=ET)
     assert get_current_window(midday_plus) == "MIDDAY"
+
+    morning_edge = datetime(2024, 1, 1, 8, 49, 0, tzinfo=ET)
+    assert get_current_window(morning_edge) == "MORNING"
 
 
 def test_get_current_window_outside_tolerance():
-    """Test window detection outside tolerance."""
-    # Morning window + 10 minutes (outside tolerance)
-    too_late = datetime(2024, 1, 1, 8, 45, 0, tzinfo=ET)
+    """Test window detection outside tolerance (14 min)."""
+    too_late = datetime(2024, 1, 1, 8, 50, 0, tzinfo=ET)
     assert get_current_window(too_late) is None
 
-    # Between windows
     between = datetime(2024, 1, 1, 10, 0, 0, tzinfo=ET)
     assert get_current_window(between) is None
 

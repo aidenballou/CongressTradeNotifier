@@ -18,6 +18,7 @@ try:
         has_daily_tape_today,
         has_seven_day_theme_today,
         has_window_posted_today,
+        has_member_spotlight_recent,
     )
     from trade_analyzer import analyze_filing
     from historical_context import build_historical_context
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover
         has_daily_tape_today,
         has_seven_day_theme_today,
         has_window_posted_today,
+        has_member_spotlight_recent,
     )
     from src.trade_analyzer import analyze_filing
     from src.historical_context import build_historical_context
@@ -171,37 +173,59 @@ def _select_for_evening(scored_bundles: List[tuple], threshold: Optional[int], t
         if theme.get("top_5_tickers_by_value") and not has_seven_day_theme_today(today):
             return ContentDecision("SEVEN_DAY_THEME", None, None, "no_filings_today")
     else:
-        # Member Spotlight
+        # Member Spotlight (skip if same member was spotlighted within last 7 days)
         spotlight = build_member_spotlight(now_et)
         if spotlight:
-            return ContentDecision("MEMBER_SPOTLIGHT", None, None, "member_spotlight")
+            member_name = spotlight.get("member_name") or spotlight.get("member", "")
+            if not has_member_spotlight_recent(member_name, days=7):
+                return ContentDecision("MEMBER_SPOTLIGHT", member_name or None, None, "member_spotlight")
 
     return None
 
 
-def _compose_for_decision(decision: ContentDecision, now_et: datetime) -> Optional[List[Dict[str, Any]]]:
-    """Compose thread based on decision type."""
+def _compose_for_decision(
+    decision: ContentDecision,
+    now_et: datetime,
+    scored_bundles: Optional[List[tuple]] = None,
+    recent_trades: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Compose thread based on decision type, reusing pre-computed data when available."""
     
     if decision.content_type == "ALERT":
-        # Need to find the bundle and build full thread
-        bundles = build_bundles_from_db(now_et, hours=24)
-        recent_trades = fetch_recent_trades(days=400, now_et=now_et)
-        
-        for bundle in bundles:
-            if bundle_id(bundle) == decision.bundle_id:
-                signal = analyze_filing(bundle, recent_trades, now_et)
-                context = build_historical_context(bundle, signal, window_days=30)
-                insight = generate_insight(bundle, signal, context)
-                stats = signal.get("diagnostics", {})
-                return compose_thread(bundle, signal, insight, context, stats)
-        return None
+        bundle = None
+        signal = None
+        if scored_bundles:
+            for b, s, _score in scored_bundles:
+                if bundle_id(b) == decision.bundle_id:
+                    bundle = b
+                    signal = s
+                    break
+        if bundle is None:
+            bundles = build_bundles_from_db(now_et, hours=24)
+            if recent_trades is None:
+                recent_trades = fetch_recent_trades(days=400, now_et=now_et)
+            for b in bundles:
+                if bundle_id(b) == decision.bundle_id:
+                    bundle = b
+                    signal = analyze_filing(b, recent_trades, now_et)
+                    break
+        if bundle is None or signal is None:
+            return None
+        context = build_historical_context(bundle, signal, window_days=30)
+        insight = generate_insight(bundle, signal, context)
+        stats = signal.get("diagnostics", {})
+        return compose_thread(bundle, signal, insight, context, stats)
     
     elif decision.content_type == "DAILY_TAPE":
         tape = build_daily_tape(now_et)
+        if tape.get("total_filings", 0) == 0:
+            return None
         return compose_daily_tape_thread(tape)
     
     elif decision.content_type == "SEVEN_DAY_THEME":
         theme = build_seven_day_theme(now_et)
+        if not theme.get("top_5_tickers_by_value"):
+            return None
         return compose_seven_day_theme_thread(theme)
     
     elif decision.content_type == "MEMBER_SPOTLIGHT":
@@ -279,9 +303,9 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     unposted_bundles = filter_unposted(bundles, today)
     recent_trades = fetch_recent_trades(days=400, now_et=now_et)
     
-    # Score and rank
+    # Score and rank (use unposted for scoring, but total bundles for threshold)
     scored_bundles = _score_and_rank_bundles(unposted_bundles, recent_trades, now_et)
-    threshold = compute_threshold(len(unposted_bundles), window)
+    threshold = compute_threshold(len(bundles), window)
 
     # Select content based on window
     decision = None
@@ -317,8 +341,8 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
             score=decision.score,
         ).to_dict()
 
-    # Compose thread
-    thread = _compose_for_decision(decision, now_et)
+    # Compose thread (pass pre-computed data to avoid redundant DB queries and API calls)
+    thread = _compose_for_decision(decision, now_et, scored_bundles=scored_bundles, recent_trades=recent_trades)
     if not thread:
         print(f"[Scheduler] window={window} action=skip reason=composition_failed")
         return SchedulerOutcome(
@@ -334,10 +358,13 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     if os.getenv("SCHEDULER_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
         print(f"[Scheduler] dry_run=1 would_post content_type={decision.content_type} window={window} threshold={threshold} score={decision.score}")
         try:
-            from analytics.engagement import engagement_health_report
-        except ImportError:
-            from src.analytics.engagement import engagement_health_report
-        print(engagement_health_report())
+            try:
+                from analytics.engagement import engagement_health_report
+            except ImportError:
+                from src.analytics.engagement import engagement_health_report
+            print(engagement_health_report())
+        except Exception as eng_err:
+            print(f"[Scheduler] engagement_health_report failed (non-fatal): {eng_err}")
         return SchedulerOutcome(
             posted=False,
             reason="dry_run",
@@ -349,16 +376,23 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
         ).to_dict()
 
     # Enqueue this decision and dispatch so it can post in this run.
+    bundles_for_payload = build_bundles_from_db(now_et, hours=24)
+    alert_trades = []
+    if decision.content_type == "ALERT" and decision.bundle_id:
+        for b in bundles_for_payload:
+            if bundle_id(b) == decision.bundle_id:
+                alert_trades = b.get("trades", [])
+                break
     queue_unit = {
         "disclosureDate": today,
         "signalType": decision.content_type,
         "thread": thread,
-        "filing": {"disclosureDate": today, "trades": []},
+        "filing": {"disclosureDate": today, "trades": alert_trades},
         "signal": {"summarySentence": decision.reason},
         "context": {"window": window, "bundle_id": decision.bundle_id},
     }
     enqueue_signal_threads([queue_unit], now_et, force_due_now=True)
-    dispatch_summary = dispatch_due_threads(now_et)
+    dispatch_summary = dispatch_due_threads(now_et, skip_anti_spam=drain_posted == 0)
     posted_now = int(dispatch_summary.get("posted", 0))
     total_posted = drain_posted + posted_now
     if posted_now < 1:
@@ -373,13 +407,15 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
             score=decision.score,
         ).to_dict()
 
-    # Log decision and engagement health summary
     _log_decision(window, decision, len(unposted_bundles))
     try:
-        from analytics.engagement import engagement_health_report
-    except ImportError:
-        from src.analytics.engagement import engagement_health_report
-    print(engagement_health_report())
+        try:
+            from analytics.engagement import engagement_health_report
+        except ImportError:
+            from src.analytics.engagement import engagement_health_report
+        print(engagement_health_report())
+    except Exception as eng_err:
+        print(f"[Scheduler] engagement_health_report failed (non-fatal): {eng_err}")
 
     return SchedulerOutcome(
         posted=True,

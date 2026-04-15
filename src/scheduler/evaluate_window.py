@@ -7,7 +7,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
-TOLERANCE_MINUTES = 8
+TOLERANCE_MINUTES = 14
 
 WINDOWS = {
     "MORNING": time(8, 35),

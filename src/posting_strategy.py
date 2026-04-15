@@ -238,7 +238,7 @@ def _defer_queue_item(queue_id: int, scheduled_for: datetime, now_et: datetime) 
     conn.commit()
 
 
-def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
+def dispatch_due_threads(now_et: datetime, *, skip_anti_spam: bool = False) -> Dict[str, Any]:
     """Dispatch due queued threads with anti-spam and retry semantics."""
 
     now_et = now_et.astimezone(ET)
@@ -248,6 +248,18 @@ def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
         "deferred": 0,
         "failed": 0,
     }
+
+    # Recover items stuck in POSTING status (e.g., from a previous crash)
+    stale_cutoff = _to_iso(now_et - timedelta(minutes=10))
+    cursor.execute(
+        """
+        UPDATE tweet_queue
+        SET status = 'PENDING', updated_at = ?
+        WHERE status = 'POSTING' AND updated_at < ?
+        """,
+        (_to_iso(now_et), stale_cutoff),
+    )
+    conn.commit()
 
     cursor.execute(
         """
@@ -280,16 +292,29 @@ def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
                 if not thread:
                     raise ValueError("Queue payload missing thread")
 
-                last_root = _get_metadata("last_root_posted_at")
-                if last_root:
-                    last_dt = _from_iso(last_root)
-                    minimum_next = last_dt + timedelta(seconds=ANTI_SPAM_SECONDS)
-                    if now_et < minimum_next:
-                        _defer_queue_item(queue_id, minimum_next, now_et)
-                        summary["deferred"] += 1
-                        continue
+                if not skip_anti_spam:
+                    last_root = _get_metadata("last_root_posted_at")
+                    if last_root:
+                        last_dt = _from_iso(last_root)
+                        minimum_next = last_dt + timedelta(seconds=ANTI_SPAM_SECONDS)
+                        if now_et < minimum_next:
+                            _defer_queue_item(queue_id, minimum_next, now_et)
+                            summary["deferred"] += 1
+                            continue
 
-                posted_tweet_ids = client.post_thread(thread, min_delay_seconds=20, max_delay_seconds=60)
+                # On retry, skip tweets already posted in a previous partial attempt
+                resume_after = payload.get("_posted_ids") or []
+                remaining_thread = thread[len(resume_after):]
+                if not remaining_thread:
+                    remaining_thread = thread
+                    resume_after = []
+
+                new_ids = client.post_thread(
+                    remaining_thread,
+                    min_delay_seconds=20,
+                    max_delay_seconds=60,
+                )
+                posted_tweet_ids = resume_after + new_ids
 
                 cursor.execute(
                     """
@@ -327,6 +352,10 @@ def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
 
             except Exception as exc:
                 attempts = int(attempt_count or 0) + 1
+                # Save partial progress so retries don't duplicate tweets
+                partial_ids = getattr(exc, "_partial_tweet_ids", None)
+                if partial_ids is None and hasattr(client, "_last_partial_ids"):
+                    partial_ids = client._last_partial_ids
                 if attempts >= MAX_RETRIES:
                     cursor.execute(
                         """
@@ -339,13 +368,18 @@ def dispatch_due_threads(now_et: datetime) -> Dict[str, Any]:
                     summary["failed"] += 1
                 else:
                     retry_time = now_et + timedelta(minutes=5 * attempts)
+                    retry_payload = payload
+                    if partial_ids:
+                        retry_payload = {**payload, "_posted_ids": partial_ids}
                     cursor.execute(
                         """
                         UPDATE tweet_queue
-                        SET status = 'PENDING', attempt_count = ?, scheduled_for = ?, last_error = ?, updated_at = ?
+                        SET status = 'PENDING', attempt_count = ?, scheduled_for = ?, last_error = ?,
+                            updated_at = ?, payload_json = ?
                         WHERE id = ?
                         """,
-                        (attempts, _to_iso(retry_time), str(exc)[:500], _to_iso(now_et), queue_id),
+                        (attempts, _to_iso(retry_time), str(exc)[:500], _to_iso(now_et),
+                         json.dumps(retry_payload), queue_id),
                     )
                     summary["deferred"] += 1
                 conn.commit()

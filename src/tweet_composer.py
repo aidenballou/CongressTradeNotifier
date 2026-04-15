@@ -85,7 +85,7 @@ def compose_thread(
     context: Dict[str, Any],
     stats: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Build a 3-tweet thread payload with varied structure."""
+    """Build a 3-tweet thread: hook+action (tweet 1), context+question (tweet 2), history+stats (tweet 3)."""
 
     trades = _extract_trades(filing)
     member = _member_name(trades[0]) if trades else "A member"
@@ -103,18 +103,20 @@ def compose_thread(
     seed = f"{member}|{symbol}|{signal_type}|{filing.get('disclosureDate', '')}"
     mode = _stable_mode(seed)
 
+    # Tweet 1: Hook + member action (the attention-grabber with chart)
     if mode == 0:
-        tweet1 = f"{hook} {member} {trade_blurb}. {interpretation} {question}"
+        tweet1 = f"{hook} {member} {trade_blurb}."
     elif mode == 1:
-        tweet1 = f"{hook} Flow recap: {member} {trade_blurb}. {interpretation} {question}"
+        tweet1 = f"{hook} Flow recap: {member} {trade_blurb}."
     else:
-        tweet1 = f"{hook} Setup: {member} {trade_blurb}. {interpretation} {question}"
+        tweet1 = f"{hook} Setup: {member} {trade_blurb}."
 
     if last_outcome and len(tweet1) + len(last_outcome) + 2 <= MAX_TWEET_LEN:
         tweet1 = f"{tweet1} {last_outcome}"
 
     tweet1 = _quality_check_tweet1(tweet1)
 
+    # Tweet 2: Interpretation + engagement question (the market context)
     stat_line_options = [
         f"Signal score {score}/10 with {signal_type.lower()} characteristics.",
         f"Signal engine tagged this as {signal_type.lower()} with conviction score {score}.",
@@ -122,10 +124,14 @@ def compose_thread(
     ]
     stat_line = stat_line_options[mode]
 
-    tweet2 = _trim(
-        f"Chart watch on {symbol or 'the lead ticker'}: {stat_line} Trade count in filing: {len(trades)}."
-    )
+    tweet2_base = f"{interpretation} {question}"
+    tweet2_with_stat = f"{interpretation} {stat_line} {question}"
+    if len(" ".join(tweet2_with_stat.split())) <= MAX_TWEET_LEN:
+        tweet2 = _trim(tweet2_with_stat)
+    else:
+        tweet2 = _trim(tweet2_base)
 
+    # Tweet 3: Historical context + closing framing
     historical = str(context.get("combinedSummary") or "")
     if last_outcome and not historical:
         historical = last_outcome
@@ -134,9 +140,12 @@ def compose_thread(
         "Use this as context, not certainty.",
         "Useful edge maybe, guaranteed edge never.",
     ]
-    tweet3 = _trim(f"{historical} {tail_options[mode]}")
+    chart_note = f"Chart watch on {symbol or 'the lead ticker'}: {len(trades)} trade{'s' if len(trades) != 1 else ''} in filing."
+    tweet3_candidate = f"{historical} {chart_note} {tail_options[mode]}"
+    if len(" ".join(tweet3_candidate.split())) > MAX_TWEET_LEN:
+        tweet3_candidate = f"{historical} {tail_options[mode]}"
+    tweet3 = _trim(tweet3_candidate)
 
-    # Put strongest hook first with visual: attach chart to tweet 1 for higher engagement
     media_date = str(trades[0].get("transactionDate") or trades[0].get("transaction_date") or "") if trades else None
 
     return [

@@ -77,7 +77,12 @@ def fetch_recent_trades(days: int = 400, now_et: datetime | None = None) -> List
 
 
 def build_bundles_from_db(now_et: datetime, hours: int = 24) -> List[Dict[str, Any]]:
-    """Query trades table and group by member+disclosure_date into bundles."""
+    """Query trades table and group by member+disclosure_date into bundles.
+
+    Note: uses date-level filtering (disclosure_date >= start_date) so the actual
+    window may include earlier trades from the start day. This is intentional to
+    avoid missing filings near midnight boundaries.
+    """
 
     start_date = (now_et - timedelta(hours=hours)).strftime("%Y-%m-%d")
     cursor.execute(

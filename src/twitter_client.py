@@ -172,7 +172,8 @@ class TwitterClient:
             return f"{letters}-{digits}" if letters and digits else code
 
         def collapse_spaces(s: str) -> str:
-            return ' '.join(s.replace('\n', '\n ').split())
+            lines = s.split('\n')
+            return '\n'.join(' '.join(line.split()) for line in lines).strip()
 
         # Compute derived
         amount_display = self._format_amount(amount_str)
@@ -628,7 +629,7 @@ class TwitterClient:
         elif any(term in asset_desc_lower for term in ['defense', 'aerospace']):
             return "#Defense"
         else:
-            return "#Investing"
+            return "#Congress"
 
     def _select_trade_for_chart(self, bundle: Dict) -> Tuple[str, Optional[str]]:
         """Pick the trade whose symbol has the strongest performance since disclosure for charting."""
@@ -715,10 +716,12 @@ class TwitterClient:
         tweets: List[Dict],
         min_delay_seconds: int = 20,
         max_delay_seconds: int = 60,
+        resume_parent_id: Optional[str] = None,
     ) -> List[str]:
         """Post a reply-chain thread and return created tweet IDs."""
 
         posted_ids: List[str] = []
+        self._last_partial_ids = []
         if not tweets:
             return posted_ids
 
@@ -745,18 +748,29 @@ class TwitterClient:
                     logger.warning(f"Chart generation/upload failed for {symbol}: {chart_err}")
                     media_ids = None
 
-            parent_id = posted_ids[-1] if posted_ids else None
-            tweet_id = self._post_with_retry(
-                text,
-                media_ids=media_ids,
-                in_reply_to_tweet_id=parent_id,
-            )
+            if posted_ids:
+                parent_id = posted_ids[-1]
+            elif resume_parent_id:
+                parent_id = resume_parent_id
+            else:
+                parent_id = None
+
+            try:
+                tweet_id = self._post_with_retry(
+                    text,
+                    media_ids=media_ids,
+                    in_reply_to_tweet_id=parent_id,
+                )
+            except Exception:
+                self._last_partial_ids = posted_ids
+                raise
             posted_ids.append(tweet_id)
 
             if idx < len(tweets) - 1:
                 wait_time = random.randint(min_delay_seconds, max_delay_seconds)
                 time.sleep(wait_time)
 
+        self._last_partial_ids = []
         return posted_ids
     
     def _post_with_retry(

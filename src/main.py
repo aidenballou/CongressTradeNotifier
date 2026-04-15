@@ -1,6 +1,7 @@
 import hashlib
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -17,6 +18,21 @@ from scheduler.select_content import run_scheduler
 load_dotenv()
 
 ET = ZoneInfo("America/New_York")
+
+# File-based email lock that survives DB resets. Written next to the DB.
+_EMAIL_LOCK_DIR = Path(os.getenv("EMAIL_LOCK_DIR", "."))
+
+
+def _email_lock_path(date: str) -> Path:
+    return _EMAIL_LOCK_DIR / f".email_sent_{date}.lock"
+
+
+def _has_email_lock(date: str) -> bool:
+    return _email_lock_path(date).exists()
+
+
+def _write_email_lock(date: str, now_et: datetime) -> None:
+    _email_lock_path(date).write_text(now_et.isoformat())
 
 
 def _env_enabled(name: str, default: bool) -> bool:
@@ -171,12 +187,21 @@ def main():
         print("Daily highlights:")
         print(build_highlights_text(insights))
 
-        if has_email_sent_today(today):
+        email_already_sent = has_email_sent_today(today) or _has_email_lock(today)
+        db_restored = os.getenv("DB_RESTORED", "true").strip().lower() == "true"
+        if email_already_sent:
             print(f"Email already sent for {today}; skipping email send.")
+        elif not db_restored and not _has_email_lock(today):
+            print(
+                f"WARNING: DB was not restored from a previous run. "
+                f"Skipping email to avoid duplicate send. "
+                f"Lock file and DB dedupe both absent for {today}."
+            )
         else:
             print("Sending email...")
             send_summary(trades_today, insights)
             record_email_sent(today, now_et)
+            _write_email_lock(today, now_et)
             print("Email sent!")
     else:
         print("No same-day disclosures for email summary.")

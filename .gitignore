@@ -101,4 +101,7 @@ celerybeat.pid
 # mypy
 .mypy_cache/
 .dmypy.json
-dmypy.json 
+dmypy.json
+
+# Runtime email lock files
+.email_sent_*.lock

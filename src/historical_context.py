@@ -48,7 +48,7 @@ def _infer_sector(trade: Dict[str, Any]) -> str:
     for sector, keywords in SECTOR_KEYWORDS.items():
         if any(keyword in text for keyword in keywords):
             return sector
-    return "tech"
+    return "other"
 
 
 def _fetch_member_rows(member_name: str) -> List[Dict[str, Any]]:
