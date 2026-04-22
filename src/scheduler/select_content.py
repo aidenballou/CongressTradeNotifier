@@ -19,11 +19,13 @@ try:
         has_seven_day_theme_today,
         has_window_posted_today,
         has_member_spotlight_recent,
+        has_insider_alert_recent,
     )
     from trade_analyzer import analyze_filing
     from historical_context import build_historical_context
     from insight_generator import generate_insight
     from tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
+    from insider_signals import find_top_insider_signal, compose_insider_alert_thread
     from posting_strategy import enqueue_signal_threads, dispatch_due_threads
 except ImportError:  # pragma: no cover
     from src.analytics.bundle_builder import build_bundles_from_db, bundle_id, filter_unposted, fetch_recent_trades
@@ -37,11 +39,13 @@ except ImportError:  # pragma: no cover
         has_seven_day_theme_today,
         has_window_posted_today,
         has_member_spotlight_recent,
+        has_insider_alert_recent,
     )
     from src.trade_analyzer import analyze_filing
     from src.historical_context import build_historical_context
     from src.insight_generator import generate_insight
     from src.tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
+    from src.insider_signals import find_top_insider_signal, compose_insider_alert_thread
     from src.posting_strategy import enqueue_signal_threads, dispatch_due_threads
 
 
@@ -88,10 +92,38 @@ def _fallback_order_for_window(window: str) -> List[str]:
         from analytics.engagement import get_engagement_priors_for_scheduler
     except ImportError:
         from src.analytics.engagement import get_engagement_priors_for_scheduler
-    candidates = ["DAILY_TAPE", "SEVEN_DAY_THEME"]
+    candidates = ["INSIDER_ALERT", "DAILY_TAPE", "SEVEN_DAY_THEME"]
     priors = [(ct, get_engagement_priors_for_scheduler(ct, window, min_samples=2)) for ct in candidates]
     priors.sort(key=lambda x: -x[1])
     return [ct for ct, _ in priors]
+
+
+def _select_insider_alert(today: str) -> Optional[ContentDecision]:
+    """Return a ContentDecision for the best insider-buy setup today, or None.
+
+    This is intentionally conservative: it fetches the most recent open-market
+    insider purchases, detects the top signal, and skips it entirely if we've
+    already tweeted about the same ticker in the last 7 days.
+    """
+
+    try:
+        signal = find_top_insider_signal()
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[Scheduler] insider_alert_lookup_failed: {exc}")
+        return None
+
+    if signal is None or not signal.ticker:
+        return None
+
+    if has_insider_alert_recent(signal.ticker, days=7):
+        return None
+
+    return ContentDecision(
+        "INSIDER_ALERT",
+        signal.bundle_id(),
+        int(round(signal.score)),
+        f"insider_{signal.sub_type.lower()}",
+    )
 
 
 def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
@@ -111,6 +143,10 @@ def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], t
     # Fallbacks ordered by engagement prior for this window
     order = _fallback_order_for_window("MORNING")
     for content_type in order:
+        if content_type == "INSIDER_ALERT":
+            decision = _select_insider_alert(today)
+            if decision is not None:
+                return decision
         if content_type == "DAILY_TAPE" and not has_daily_tape_today(today):
             tape = build_daily_tape(now_et)
             if tape.get("total_filings", 0) > 0:
@@ -124,8 +160,8 @@ def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], t
 
 
 def _select_for_midday(scored_bundles: List[tuple], threshold: Optional[int], today: str, now_et: datetime) -> Optional[ContentDecision]:
-    """MIDDAY window: highest remaining unposted bundle only if score >= threshold."""
-    
+    """MIDDAY window: highest remaining unposted bundle, otherwise an insider alert."""
+
     # Check if window already posted
     if has_window_posted_today(today, "MIDDAY"):
         return None
@@ -135,6 +171,12 @@ def _select_for_midday(scored_bundles: List[tuple], threshold: Optional[int], to
         bid = bundle_id(bundle)
         if score >= threshold and not has_been_posted("ALERT", bid, today, "MIDDAY"):
             return ContentDecision("ALERT", bid, score, "highest_remaining_bundle")
+
+    # Fallback: MIDDAY is a great slot for insider buys — markets are awake and
+    # the congressional queue is often empty by lunch.
+    insider_decision = _select_insider_alert(today)
+    if insider_decision is not None:
+        return insider_decision
 
     return None
 
@@ -179,6 +221,12 @@ def _select_for_evening(scored_bundles: List[tuple], threshold: Optional[int], t
             member_name = spotlight.get("member_name") or spotlight.get("member", "")
             if not has_member_spotlight_recent(member_name, days=7):
                 return ContentDecision("MEMBER_SPOTLIGHT", member_name or None, None, "member_spotlight")
+
+    # Final evening fallback: a fresh insider setup can carry the window when
+    # neither congressional flow nor the member spotlight is available.
+    insider_decision = _select_insider_alert(today)
+    if insider_decision is not None:
+        return insider_decision
 
     return None
 
@@ -233,7 +281,24 @@ def _compose_for_decision(
         if spotlight:
             return compose_member_spotlight_thread(spotlight)
         return None
-    
+
+    elif decision.content_type == "INSIDER_ALERT":
+        # Re-run detection so the compose step uses the same freshly-fetched data
+        # even if detection is called out-of-band. Selection already validated
+        # dedupe and bundle id; we reconcile here to guard against drift.
+        signal = find_top_insider_signal()
+        if signal is None:
+            return None
+        if decision.bundle_id and signal.bundle_id() != decision.bundle_id:
+            # The top signal shifted between selection and composition (rare).
+            # Prefer the freshest one as long as it passes the same dedupe check.
+            try:
+                if has_insider_alert_recent(signal.ticker, days=7):
+                    return None
+            except Exception:
+                return None
+        return compose_insider_alert_thread(signal)
+
     return None
 
 

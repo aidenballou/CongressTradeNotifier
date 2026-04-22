@@ -66,6 +66,9 @@ def test_midday_returns_none_when_top_remaining_below_threshold(monkeypatch):
     monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
     monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
     monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
+    # Insider-alert fallback must also be empty for this test to isolate threshold behavior.
+    monkeypatch.setattr(select_content, "find_top_insider_signal", lambda: None)
+    monkeypatch.setattr(select_content, "has_insider_alert_recent", lambda *_a, **_k: False)
 
     scored_bundles = [
         ({"id": "bundle_a"}, {}, 6),
@@ -195,6 +198,9 @@ def test_morning_theme_fallback_skips_when_already_posted_today(monkeypatch):
         "build_seven_day_theme",
         lambda _now: {"top_5_tickers_by_value": [{"ticker": "AAPL", "value": 1000.0}]},
     )
+    # Also suppress the insider-alert fallback for this focused test.
+    monkeypatch.setattr(select_content, "find_top_insider_signal", lambda: None)
+    monkeypatch.setattr(select_content, "has_insider_alert_recent", lambda *_a, **_k: False)
 
     decision = select_content._select_for_morning(
         scored_bundles=[],
@@ -245,6 +251,61 @@ def test_run_scheduler_calls_dispatch_on_non_trading_day(monkeypatch):
     assert dispatch_calls[0] == now_et
 
 
+def test_midday_falls_back_to_insider_alert_when_nothing_qualifies(monkeypatch):
+    """MIDDAY with no qualifying congressional bundle should pick an INSIDER_ALERT."""
+
+    class _FakeSignal:
+        sub_type = "CLUSTER_BUY"
+        ticker = "NVDA"
+        score = 72.0
+
+        def bundle_id(self):
+            return "INSIDER|CLUSTER_BUY|NVDA|2026-W17"
+
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_insider_alert_recent", lambda *_a, **_k: False)
+    monkeypatch.setattr(select_content, "find_top_insider_signal", lambda: _FakeSignal())
+    monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
+
+    # Top bundle exists but score is below threshold so ALERT cannot post.
+    scored_bundles = [({"id": "bundle_a"}, {}, 3)]
+    decision = select_content._select_for_midday(
+        scored_bundles=scored_bundles,
+        threshold=7,
+        today="2026-04-21",
+        now_et=datetime(2026, 4, 21, 12, 10, tzinfo=ET),
+    )
+
+    assert decision is not None
+    assert decision.content_type == "INSIDER_ALERT"
+    assert decision.bundle_id == "INSIDER|CLUSTER_BUY|NVDA|2026-W17"
+    assert decision.reason == "insider_cluster_buy"
+
+
+def test_insider_alert_skips_when_ticker_recently_posted(monkeypatch):
+    """Dedupe: if we've already tweeted about this ticker in the last 7 days, skip."""
+
+    class _FakeSignal:
+        sub_type = "CSUITE_BUY"
+        ticker = "AAPL"
+        score = 55.0
+
+        def bundle_id(self):
+            return "INSIDER|CSUITE_BUY|AAPL|2026-W17"
+
+    monkeypatch.setattr(select_content, "find_top_insider_signal", lambda: _FakeSignal())
+    monkeypatch.setattr(select_content, "has_insider_alert_recent", lambda *_a, **_k: True)
+
+    assert select_content._select_insider_alert("2026-04-21") is None
+
+
+def test_insider_alert_returns_none_when_no_signal(monkeypatch):
+    monkeypatch.setattr(select_content, "find_top_insider_signal", lambda: None)
+    monkeypatch.setattr(select_content, "has_insider_alert_recent", lambda *_a, **_k: False)
+    assert select_content._select_insider_alert("2026-04-21") is None
+
+
 def test_evening_no_filings_skips_theme_when_already_posted_today(monkeypatch):
     """EVENING no-filings path should not duplicate SEVEN_DAY_THEME."""
     monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
@@ -255,6 +316,9 @@ def test_evening_no_filings_skips_theme_when_already_posted_today(monkeypatch):
         "build_seven_day_theme",
         lambda _now: {"top_5_tickers_by_value": [{"ticker": "MSFT", "value": 1200.0}]},
     )
+    # Suppress insider-alert fallback for this focused test.
+    monkeypatch.setattr(select_content, "find_top_insider_signal", lambda: None)
+    monkeypatch.setattr(select_content, "has_insider_alert_recent", lambda *_a, **_k: False)
 
     decision = select_content._select_for_evening(
         scored_bundles=[],

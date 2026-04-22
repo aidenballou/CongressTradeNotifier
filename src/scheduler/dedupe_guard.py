@@ -103,6 +103,30 @@ def has_window_posted_today(date: str, window: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def has_insider_alert_recent(ticker: str, days: int = 7) -> bool:
+    """Check whether we've already posted an INSIDER_ALERT for ``ticker`` recently.
+
+    We dedupe on ticker (stored as the posted_content_log.bundle_id prefix) rather
+    than the exact signal sub-type so that a cluster buy at $XYZ doesn't get
+    re-posted days later as a "C-suite buy" on the same ticker.
+    """
+
+    clean = (ticker or "").strip().upper()
+    if not clean:
+        return False
+    cursor.execute(
+        """
+        SELECT 1 FROM posted_content_log
+        WHERE content_type = 'INSIDER_ALERT'
+          AND (bundle_id = ? OR bundle_id LIKE ?)
+          AND date >= date('now', ?)
+        LIMIT 1
+        """,
+        (clean, f"%|{clean}|%", f"-{max(1, int(days))} days"),
+    )
+    return cursor.fetchone() is not None
+
+
 def has_member_spotlight_recent(member_name: str, days: int = 7) -> bool:
     """Check if this member had a spotlight within the last N days."""
     cursor.execute(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -16,6 +16,21 @@ load_dotenv()
 API_KEY = os.getenv("FMP_API_KEY")
 BASE_URL = "https://financialmodelingprep.com"
 PLAN_MAX_INSIDER_LIMIT = int(os.getenv("FMP_INSIDER_LIMIT_MAX", "100"))
+
+# Transaction-type codes (Form 4). Only P-Purchase is treated as an open-market buy.
+OPEN_MARKET_BUY_CODES = {"P-Purchase", "P"}
+OPEN_MARKET_SELL_CODES = {"S-Sale", "S"}
+# C-suite / top-officer keywords for title matching against typeOfOwner
+CSUITE_KEYWORDS = (
+    "chief executive",
+    "chief financial",
+    "chief operating",
+    "president",
+    "chairman",
+    "chief investment",
+    "chief medical",
+    "chief technology",
+)
 
 
 def fetch_latest_insider_trades(limit: int = 100) -> List[Dict[str, Any]]:
@@ -75,6 +90,160 @@ def fetch_latest_insider_trades(limit: int = 100) -> List[Dict[str, Any]]:
 
     print("[Insider] Unexpected payload type", type(payload))
     return []
+
+
+def _parse_insider_date(raw: Any) -> Optional[datetime]:
+    """Parse FMP insider dates that arrive as either YYYY-MM-DD or YYYY-MM-DD HH:MM:SS."""
+
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def normalize_insider_trade(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return a canonical view of an FMP insider-trading record.
+
+    FMP field names vary across plans and sometimes drift (e.g. ``acquistionOrDisposition``
+    is misspelled by the API). This helper collapses those shapes into a stable form so
+    downstream consumers do not have to care about the API's quirks.
+    """
+
+    symbol = str(raw.get("symbol") or "").strip().upper()
+    name = str(
+        raw.get("reportingName")
+        or raw.get("insiderName")
+        or raw.get("owner")
+        or ""
+    ).strip()
+    title = str(
+        raw.get("typeOfOwner")
+        or raw.get("insiderTitle")
+        or raw.get("position")
+        or ""
+    ).strip()
+    transaction_code = str(raw.get("transactionType") or raw.get("type") or "").strip()
+    acquisition = str(
+        raw.get("acquistionOrDisposition")  # FMP's misspelling
+        or raw.get("acquisitionOrDisposition")
+        or ""
+    ).strip().upper()
+
+    try:
+        shares = float(raw.get("securitiesTransacted") or raw.get("shares") or 0) or 0.0
+    except (TypeError, ValueError):
+        shares = 0.0
+    try:
+        price = float(raw.get("price") or raw.get("sharePrice") or 0) or 0.0
+    except (TypeError, ValueError):
+        price = 0.0
+
+    transaction_date = _parse_insider_date(raw.get("transactionDate"))
+    filing_date = _parse_insider_date(raw.get("filingDate") or raw.get("date"))
+
+    title_lower = title.lower()
+    is_open_market_buy = transaction_code in OPEN_MARKET_BUY_CODES and acquisition in {"", "A"}
+    is_csuite = any(keyword in title_lower for keyword in CSUITE_KEYWORDS)
+    is_director = "director" in title_lower
+    is_ten_percent = "10 percent owner" in title_lower or "10% owner" in title_lower
+
+    return {
+        "symbol": symbol,
+        "insider_name": name,
+        "title": title,
+        "title_lower": title_lower,
+        "transaction_code": transaction_code,
+        "acquisition_disposition": acquisition,
+        "shares": shares,
+        "price": price,
+        "value": shares * price,
+        "transaction_date": transaction_date,
+        "filing_date": filing_date,
+        "is_open_market_buy": is_open_market_buy,
+        "is_csuite": is_csuite,
+        "is_director": is_director,
+        "is_ten_percent_owner": is_ten_percent,
+        "url": str(raw.get("url") or raw.get("link") or "").strip(),
+        "raw": dict(raw),
+    }
+
+
+def fetch_insider_trades_window(
+    *,
+    days: int = 7,
+    max_pages: int = 5,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch recent insider filings and return normalized open-market *buy* records.
+
+    The FMP ``/stable/insider-trading/latest`` endpoint is paginated in pages of up to
+    ``PLAN_MAX_INSIDER_LIMIT`` records, newest first. We walk pages until we see a
+    transaction date older than ``now - days`` or we hit ``max_pages``.
+    """
+
+    if not API_KEY:
+        print("[Insider] Skipping fetch_insider_trades_window: FMP_API_KEY is not set")
+        return []
+
+    now = now or datetime.utcnow()
+    cutoff = now - timedelta(days=max(1, int(days)))
+
+    per_page = PLAN_MAX_INSIDER_LIMIT
+    out: List[Dict[str, Any]] = []
+    for page in range(max(1, int(max_pages))):
+        url = (
+            f"{BASE_URL}/stable/insider-trading/latest"
+            f"?page={page}&limit={per_page}&apikey={API_KEY}"
+        )
+        try:
+            resp = requests.get(url, timeout=15)
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            print(f"[Insider] Window fetch request failed (page={page}): {exc}")
+            break
+
+        if resp.status_code != 200:
+            print(
+                f"[Insider] Window fetch status={resp.status_code} body={resp.text[:160]} (page={page})"
+            )
+            break
+
+        try:
+            payload = resp.json()
+        except ValueError:
+            print(f"[Insider] Window fetch JSON decode failed (page={page})")
+            break
+
+        if not isinstance(payload, list) or not payload:
+            break
+
+        oldest_on_page: Optional[datetime] = None
+        for raw in payload:
+            normalized = normalize_insider_trade(raw)
+            tx_date = normalized["transaction_date"] or normalized["filing_date"]
+            if tx_date is None:
+                continue
+            if oldest_on_page is None or tx_date < oldest_on_page:
+                oldest_on_page = tx_date
+            if tx_date < cutoff:
+                continue
+            if not normalized["is_open_market_buy"]:
+                continue
+            if normalized["value"] <= 0:
+                continue
+            out.append(normalized)
+
+        # Stop once the page's oldest record predates our window — older pages can't help.
+        if oldest_on_page is not None and oldest_on_page < cutoff:
+            break
+
+    return out
 
 
 def find_recent_insider_activity(
