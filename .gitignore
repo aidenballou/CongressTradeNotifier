@@ -56,6 +56,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+outputs/
+.cache/
 
 # Coverage reports
 htmlcov/

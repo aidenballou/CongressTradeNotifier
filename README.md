@@ -133,6 +133,40 @@ To preview without DB data:
 python scripts/preview_tweet.py --sample
 ```
 
+## Standalone Copy-Trade Backtesting
+
+The copy-trade backtester is intentionally separate from the tweet/content
+strategy. It lives in `src/backtesting/` and is run through
+`scripts/backtest_copy_trades.py`. It reads the SQLite disclosures, uses
+`disclosure_date` as the signal date to avoid lookahead bias, downloads daily
+price history with `yfinance`, and writes CSV artifacts under `outputs/backtests/`.
+
+Examples:
+
+```bash
+python scripts/backtest_copy_trades.py \
+  --strategy stock_long_only \
+  --hold-days 20 \
+  --entry-delay-days 1
+
+python scripts/backtest_copy_trades.py \
+  --strategy stock_long_short \
+  --copy-sales \
+  --leverage 3 \
+  --hold-days 60
+
+python scripts/backtest_copy_trades.py \
+  --strategy option_copy \
+  --option-dte 90 \
+  --option-moneyness 1.10 \
+  --hold-days 30
+```
+
+The options mode is synthetic: it uses Black-Scholes with trailing realized
+volatility, not historical option chains. It is useful for comparing broad
+profiles like 3-month ATM calls versus 1-year OTM calls, but it is not a
+substitute for a historical options dataset with bid/ask and liquidity.
+
 ## Scheduler Behavior
 
 The scheduler is window-aware (ET) and runs selection logic for:
