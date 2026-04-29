@@ -24,7 +24,7 @@ try:
     from trade_analyzer import analyze_filing
     from historical_context import build_historical_context
     from insight_generator import generate_insight
-    from tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
+    from tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread, validate_social_copy
     from insider_signals import find_top_insider_signal, compose_insider_alert_thread
     from posting_strategy import enqueue_signal_threads, dispatch_due_threads
 except ImportError:  # pragma: no cover
@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     from src.trade_analyzer import analyze_filing
     from src.historical_context import build_historical_context
     from src.insight_generator import generate_insight
-    from src.tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread
+    from src.tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread, validate_social_copy
     from src.insider_signals import find_top_insider_signal, compose_insider_alert_thread
     from src.posting_strategy import enqueue_signal_threads, dispatch_due_threads
 
@@ -72,6 +72,61 @@ class SchedulerOutcome:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def _min_amount_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _largest_trade_value(tape: Dict[str, Any]) -> float:
+    try:
+        return float((tape.get("largest_trade") or {}).get("amount_value") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _daily_tape_qualifies(tape: Dict[str, Any]) -> bool:
+    min_amount = _min_amount_env("SCHEDULER_DAILY_TAPE_MIN_AMOUNT", 25_000)
+    return int(tape.get("total_filings") or 0) >= 2 or _largest_trade_value(tape) >= min_amount
+
+
+def _seven_day_theme_qualifies(theme: Dict[str, Any]) -> bool:
+    min_amount = _min_amount_env("SCHEDULER_THEME_MIN_TOP_VALUE", 25_000)
+    top_cluster = theme.get("top_cluster") or {}
+    if int(top_cluster.get("member_count") or 0) >= 2:
+        return True
+    clusters = theme.get("cluster_tickers") or []
+    if any(int(cluster.get("member_count") or 0) >= 2 for cluster in clusters):
+        return True
+    top = (theme.get("top_5_tickers_by_value") or [{}])[0]
+    try:
+        return float(top.get("value") or 0.0) >= min_amount
+    except (TypeError, ValueError):
+        return False
+
+
+def _member_spotlight_qualifies(spotlight: Optional[Dict[str, Any]]) -> bool:
+    if not spotlight or not spotlight.get("ticker"):
+        return False
+    min_amount = _min_amount_env("SCHEDULER_MEMBER_SPOTLIGHT_MIN_AMOUNT", 25_000)
+    try:
+        return float(spotlight.get("amount_value") or 0.0) >= min_amount
+    except (TypeError, ValueError):
+        return False
+
+
+def _thread_has_valid_social_copy(thread: List[Dict[str, Any]]) -> bool:
+    if not thread:
+        return False
+    for tweet in thread:
+        text = str(tweet.get("text") or "")
+        allow_no_filings = "no new congressional filings" in text.lower()
+        if not validate_social_copy(text, allow_no_filings=allow_no_filings):
+            return False
+    return True
 
 
 def _score_and_rank_bundles(bundles: List[Dict[str, Any]], recent_trades: List[Dict[str, Any]], now_et: datetime) -> List[tuple[Dict[str, Any], Dict[str, Any], int]]:
@@ -149,11 +204,11 @@ def _select_for_morning(scored_bundles: List[tuple], threshold: Optional[int], t
                 return decision
         if content_type == "DAILY_TAPE" and not has_daily_tape_today(today):
             tape = build_daily_tape(now_et)
-            if tape.get("total_filings", 0) > 0:
+            if _daily_tape_qualifies(tape):
                 return ContentDecision("DAILY_TAPE", None, None, "daily_tape_fallback")
         if content_type == "SEVEN_DAY_THEME" and not has_seven_day_theme_today(today):
             theme = build_seven_day_theme(now_et)
-            if theme.get("top_5_tickers_by_value"):
+            if _seven_day_theme_qualifies(theme):
                 return ContentDecision("SEVEN_DAY_THEME", None, None, "seven_day_theme_fallback")
 
     return None
@@ -190,9 +245,9 @@ def _select_for_power_hour(scored_bundles: List[tuple], threshold: Optional[int]
 
     posts_today = count_posts_today(today)
     if posts_today == 0:
-        # Must post Daily Tape only when filings exist today.
+        # First post only when the recap has enough signal to avoid filler.
         tape = build_daily_tape(now_et)
-        if tape.get("total_filings", 0) > 0 and not has_daily_tape_today(today):
+        if _daily_tape_qualifies(tape) and not has_daily_tape_today(today):
             return ContentDecision("DAILY_TAPE", None, None, "mandatory_first_post")
 
     return None
@@ -212,12 +267,12 @@ def _select_for_evening(scored_bundles: List[tuple], threshold: Optional[int], t
     if filings_today == 0:
         # 7-day Theme
         theme = build_seven_day_theme(now_et)
-        if theme.get("top_5_tickers_by_value") and not has_seven_day_theme_today(today):
+        if _seven_day_theme_qualifies(theme) and not has_seven_day_theme_today(today):
             return ContentDecision("SEVEN_DAY_THEME", None, None, "no_filings_today")
     else:
         # Member Spotlight (skip if same member was spotlighted within last 7 days)
         spotlight = build_member_spotlight(now_et)
-        if spotlight:
+        if _member_spotlight_qualifies(spotlight):
             member_name = spotlight.get("member_name") or spotlight.get("member", "")
             if not has_member_spotlight_recent(member_name, days=7):
                 return ContentDecision("MEMBER_SPOTLIGHT", member_name or None, None, "member_spotlight")
@@ -353,16 +408,6 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     today = now_et.strftime("%Y-%m-%d")
     posts_today = count_posts_today(today)
     
-    if posts_today >= 3:
-        print(f"[Scheduler] window={window} action=skip reason=daily_max_reached")
-        return SchedulerOutcome(
-            posted=False,
-            reason="daily_max_reached",
-            window=window,
-            content_type=None,
-            posted_count=drain_posted,
-        ).to_dict()
-
     # Gather bundles
     bundles = build_bundles_from_db(now_et, hours=24)
     unposted_bundles = filter_unposted(bundles, today)
@@ -371,6 +416,16 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     # Score and rank (use unposted for scoring, but total bundles for threshold)
     scored_bundles = _score_and_rank_bundles(unposted_bundles, recent_trades, now_et)
     threshold = compute_threshold(len(bundles), window)
+    tier1_available = bool(scored_bundles and threshold is not None and scored_bundles[0][2] >= threshold)
+    if posts_today >= 2 and not tier1_available:
+        print(f"[Scheduler] window={window} action=skip reason=daily_max_reached")
+        return SchedulerOutcome(
+            posted=False,
+            reason="daily_max_reached",
+            window=window,
+            content_type=None,
+            posted_count=drain_posted,
+        ).to_dict()
 
     # Select content based on window
     decision = None
@@ -387,7 +442,7 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
         _log_decision(window, None, len(unposted_bundles))
         return SchedulerOutcome(
             posted=False,
-            reason="no_content_selected",
+            reason="no_high_quality_content",
             window=window,
             content_type=None,
             posted_count=drain_posted,
@@ -413,6 +468,17 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
         return SchedulerOutcome(
             posted=False,
             reason="composition_failed",
+            window=window,
+            content_type=decision.content_type,
+            posted_count=drain_posted,
+            bundle_id=decision.bundle_id,
+            score=decision.score,
+        ).to_dict()
+    if not _thread_has_valid_social_copy(thread):
+        print(f"[Scheduler] window={window} action=skip reason=invalid_social_copy")
+        return SchedulerOutcome(
+            posted=False,
+            reason="invalid_social_copy",
             window=window,
             content_type=decision.content_type,
             posted_count=drain_posted,

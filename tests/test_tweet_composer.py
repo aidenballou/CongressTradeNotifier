@@ -5,7 +5,13 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from tweet_composer import compose_thread
+from tweet_composer import (
+    compose_daily_tape_thread,
+    compose_member_spotlight_thread,
+    compose_seven_day_theme_thread,
+    compose_thread,
+    validate_social_copy,
+)
 
 
 def _sample(signal_type="CONVICTION", symbol="NVDA", member="Jade Stone"):
@@ -20,6 +26,8 @@ def _sample(signal_type="CONVICTION", symbol="NVDA", member="Jade Stone"):
                 "lastName": last,
                 "symbol": symbol,
                 "type": "Purchase",
+                "amount_value": 75000,
+                "amount": "$50,001 - $100,000",
                 "transactionDate": "2026-01-08",
             }
         ],
@@ -44,6 +52,9 @@ def test_compose_thread_shape_and_limits():
     assert all("text" in tweet for tweet in thread)
     assert all(len(tweet["text"]) <= 280 for tweet in thread)
     assert thread[0]["media_symbol"] == "NVDA"
+    assert "$NVDA" in thread[0]["text"]
+    assert "$75K" in thread[0]["text"]
+    assert "reported a BUY" in thread[0]["text"]
 
 
 def test_compose_thread_varies_structure():
@@ -88,3 +99,75 @@ print(thread[0]["text"])
     out1 = subprocess.check_output([sys.executable, "-c", code], env=env1, text=True).strip()
     out2 = subprocess.check_output([sys.executable, "-c", code], env=env2, text=True).strip()
     assert out1 == out2
+
+
+def test_daily_tape_root_avoids_dashboard_label_and_formats_ticker():
+    tape = {
+        "total_filings": 2,
+        "largest_trade": {
+            "ticker": "NVDA",
+            "member_name": "Jade Stone",
+            "transaction_type": "Purchase",
+            "action_normalized": "BUY",
+            "amount_value": 75000,
+            "transaction_date": "2026-01-08",
+            "disclosure_date": "2026-01-10",
+            "days_to_file": 2,
+        },
+    }
+
+    thread = compose_daily_tape_thread(tape)
+
+    assert len(thread) == 1
+    assert not thread[0]["text"].startswith("Daily Tape:")
+    assert "$NVDA" in thread[0]["text"]
+    assert "$75K" in thread[0]["text"]
+    assert len(thread[0]["text"]) <= 280
+
+
+def test_seven_day_theme_root_avoids_dashboard_label():
+    theme = {
+        "top_5_tickers_by_value": [
+            {"ticker": "NVDA", "value": 125000.0},
+            {"ticker": "MSFT", "value": 50000.0},
+            {"ticker": "AAPL", "value": 30000.0},
+        ],
+        "cluster_tickers": [{"ticker": "NVDA", "member_count": 3}],
+        "top_cluster": {"ticker": "NVDA", "member_count": 3},
+        "top_buyer_member": "Jade Stone",
+    }
+
+    thread = compose_seven_day_theme_thread(theme)
+
+    assert len(thread) == 1
+    assert not thread[0]["text"].startswith("7-Day Theme:")
+    assert "$NVDA" in thread[0]["text"]
+    assert len(thread[0]["text"]) <= 280
+
+
+def test_member_spotlight_does_not_emit_context_reply():
+    spotlight = {
+        "member": "Jade Stone",
+        "ticker": "MSFT",
+        "amount_value": 55000.0,
+        "transaction_type": "Sale",
+        "transaction_date": "2026-01-08",
+        "disclosure_date": "2026-01-11",
+        "description": "large technology sale",
+    }
+
+    thread = compose_member_spotlight_thread(spotlight)
+
+    assert len(thread) == 1
+    assert not thread[0]["text"].startswith("Member Spotlight:")
+    assert all(not tweet["text"].startswith("Context:") for tweet in thread)
+    assert "$MSFT" in thread[0]["text"]
+    assert "$55K" in thread[0]["text"]
+    assert len(thread[0]["text"]) <= 280
+
+
+def test_validate_social_copy_blocks_banned_and_metric_only_copy():
+    assert not validate_social_copy("Daily Tape: 1 filing in the last 24h.")
+    assert not validate_social_copy("Net: all buys buy vs sell bias.")
+    assert not validate_social_copy("Jade Stone reported a BUY worth about $75K.", ticker_data_exists=True)
+    assert not validate_social_copy("Jade Stone reported a BUY in $NVDA.", amount_data_exists=True)

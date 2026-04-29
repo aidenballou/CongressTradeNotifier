@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 import scheduler.select_content as select_content
 
 ET = ZoneInfo("America/New_York")
+VALID_COPY = "Jade Stone reported a BUY in $NVDA worth about $75K. Why it matters: high-signal filing."
 
 
 def test_midday_selects_first_remaining_candidate(monkeypatch):
@@ -132,7 +133,7 @@ def test_run_scheduler_midday_picks_top_unposted_bundle(monkeypatch):
     monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
     monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
     monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
-    monkeypatch.setattr(select_content, "_compose_for_decision", lambda *_args, **_kwargs: [{"text": "ok"}])
+    monkeypatch.setattr(select_content, "_compose_for_decision", lambda *_args, **_kwargs: [{"text": VALID_COPY}])
     monkeypatch.setattr(select_content, "enqueue_signal_threads", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args, **_kwargs: {"posted": 1})
     monkeypatch.setattr(
@@ -171,7 +172,7 @@ def test_run_scheduler_enqueues_selected_content_as_due_now(monkeypatch):
     monkeypatch.setattr(
         select_content,
         "_compose_for_decision",
-        lambda *_args, **_kwargs: [{"text": "ok", "media_symbol": None, "media_trade_date": None}],
+        lambda *_args, **_kwargs: [{"text": VALID_COPY, "media_symbol": None, "media_trade_date": None}],
     )
     monkeypatch.setattr(
         select_content,
@@ -328,3 +329,92 @@ def test_evening_no_filings_skips_theme_when_already_posted_today(monkeypatch):
     )
 
     assert decision is None
+
+
+def test_morning_low_value_daily_tape_fallback_is_skipped(monkeypatch):
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_daily_tape_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_seven_day_theme_today", lambda *_args: True)
+    monkeypatch.setattr(select_content, "_fallback_order_for_window", lambda _window: ["DAILY_TAPE"])
+    monkeypatch.setattr(
+        select_content,
+        "build_daily_tape",
+        lambda _now: {"total_filings": 1, "largest_trade": {"amount_value": 5000.0}},
+    )
+
+    decision = select_content._select_for_morning(
+        scored_bundles=[],
+        threshold=None,
+        today="2024-01-02",
+        now_et=datetime(2024, 1, 2, 8, 35, tzinfo=ET),
+    )
+
+    assert decision is None
+
+
+def test_morning_high_value_daily_tape_fallback_is_selected(monkeypatch):
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_daily_tape_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "_fallback_order_for_window", lambda _window: ["DAILY_TAPE"])
+    monkeypatch.setattr(
+        select_content,
+        "build_daily_tape",
+        lambda _now: {"total_filings": 1, "largest_trade": {"amount_value": 50000.0}},
+    )
+
+    decision = select_content._select_for_morning(
+        scored_bundles=[],
+        threshold=None,
+        today="2024-01-02",
+        now_et=datetime(2024, 1, 2, 8, 35, tzinfo=ET),
+    )
+
+    assert decision is not None
+    assert decision.content_type == "DAILY_TAPE"
+
+
+def test_low_value_member_spotlight_is_disabled(monkeypatch):
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "build_daily_tape", lambda _now: {"total_filings": 1})
+    monkeypatch.setattr(
+        select_content,
+        "build_member_spotlight",
+        lambda _now: {"member": "Jade Stone", "ticker": "NVDA", "amount_value": 5000.0},
+    )
+    monkeypatch.setattr(select_content, "find_top_insider_signal", lambda: None)
+    monkeypatch.setattr(select_content, "has_insider_alert_recent", lambda *_a, **_k: False)
+
+    decision = select_content._select_for_evening(
+        scored_bundles=[],
+        threshold=None,
+        today="2024-01-02",
+        now_et=datetime(2024, 1, 2, 17, 5, tzinfo=ET),
+    )
+
+    assert decision is None
+
+
+def test_scheduler_blocks_invalid_social_copy_before_enqueue(monkeypatch):
+    enqueue_calls = []
+    now_et = datetime(2024, 1, 2, 8, 35, tzinfo=ET)
+
+    monkeypatch.setattr(select_content, "get_current_window", lambda _now: "MORNING")
+    monkeypatch.setattr(select_content, "is_trading_day", lambda _now: True)
+    monkeypatch.setattr(select_content, "count_posts_today", lambda _today: 0)
+    monkeypatch.setattr(select_content, "build_bundles_from_db", lambda _now, hours=24: [{"id": "bundle_a"}])
+    monkeypatch.setattr(select_content, "filter_unposted", lambda bundles, _today: bundles)
+    monkeypatch.setattr(select_content, "fetch_recent_trades", lambda days, now_et: [])
+    monkeypatch.setattr(select_content, "_score_and_rank_bundles", lambda *_args: [({"id": "bundle_a"}, {}, 9)])
+    monkeypatch.setattr(select_content, "compute_threshold", lambda _count, _window=None: 7)
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
+    monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
+    monkeypatch.setattr(select_content, "_compose_for_decision", lambda *_args, **_kwargs: [{"text": "Daily Tape: 1 filing."}])
+    monkeypatch.setattr(select_content, "enqueue_signal_threads", lambda *args, **kwargs: enqueue_calls.append((args, kwargs)) or 1)
+    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args, **_kwargs: {"posted": 0})
+
+    result = select_content.run_scheduler(now_et)
+
+    assert result["posted"] is False
+    assert result["reason"] == "invalid_social_copy"
+    assert enqueue_calls == []
