@@ -7,6 +7,10 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+permissions:
+  actions: read
+  contents: read
+
 concurrency:
   group: insiders-main-workflow
   cancel-in-progress: false
@@ -43,7 +47,7 @@ jobs:
         with:
           name: trades-db
           run-id: ${{ steps.get-prev-run.outputs.run_id }}
-        continue-on-error: true
+          github-token: ${{ github.token }}
 
       - name: Restore email lock files
         uses: actions/cache/restore@v4
