@@ -112,6 +112,33 @@ class TestTwitterClient:
         assert client._format_amount('') == 'an undisclosed amount'
         assert client._format_amount('$15,000 - $50,000') == 'up to $50k'
         assert client._format_amount('$250,000') == '$250k'
+
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_format_trade_tweet_uses_amount_value_fallback(self, mock_client):
+        client = TwitterClient()
+
+        trade = {
+            'firstName': 'John',
+            'lastName': 'Doe',
+            'type': 'BUY',
+            'symbol': 'AAPL',
+            'amount': '',
+            'amount_value': 75000,
+            'transactionDate': '2025-01-15',
+            'assetDescription': 'Apple Inc - Common Stock',
+            'source': 'senate'
+        }
+
+        tweet = client._format_trade_tweet(trade)
+
+        assert 'worth $75k' in tweet
+        assert 'undisclosed' not in tweet.lower()
     
     @patch.dict('os.environ', {
         'TWITTER_API_KEY': 'test_key',
@@ -195,6 +222,30 @@ class TestTwitterClient:
         
         # Verify tweet was posted
         mock_client_instance.create_tweet.assert_called_once()
+
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_post_trade_tweet_rejects_incomplete_trade(self, mock_client):
+        client = TwitterClient()
+
+        trade = {
+            'firstName': 'John',
+            'lastName': 'Doe',
+            'type': '',
+            'symbol': 'AAPL',
+            'amount': '',
+            'transactionDate': '2025-01-15',
+        }
+
+        with pytest.raises(ValueError, match="missing ticker, BUY/SELL direction, or disclosed amount"):
+            client.post_trade_tweet(trade)
+
+        mock_client.return_value.create_tweet.assert_not_called()
 
     @patch.dict('os.environ', {
         'TWITTER_API_KEY': 'test_key',
@@ -540,6 +591,21 @@ class TestPostTradesToTwitter:
         
         # Verify client was not created
         mock_twitter_client.assert_not_called()
+
+    @patch('src.twitter_client.TwitterClient')
+    def test_post_trades_to_twitter_filters_incomplete_trades(self, mock_twitter_client):
+        mock_instance = Mock()
+        mock_twitter_client.return_value = mock_instance
+
+        trades = [
+            {'firstName': 'John', 'lastName': 'Doe', 'type': 'purchase', 'symbol': 'AAPL', 'amount': '$1,001 - $15,000', 'disclosureDate': '2025-01-15'},
+            {'firstName': 'Jane', 'lastName': 'Smith', 'type': '', 'symbol': 'TSLA', 'amount': '', 'disclosureDate': '2025-01-15'},
+        ]
+
+        post_trades_to_twitter(trades)
+
+        mock_twitter_client.assert_called_once()
+        mock_instance.post_trade_tweet.assert_called_once_with(trades[0])
     
     @patch('src.twitter_client.TwitterClient')
     def test_post_trades_to_twitter_client_error(self, mock_twitter_client):

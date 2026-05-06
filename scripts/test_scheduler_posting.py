@@ -131,7 +131,7 @@ def preview_thread(thread, title="Thread Preview"):
     print(f"\n{'='*60}\n")
 
 
-def test_window(window_name: str, dry_run: bool = False, force_time: datetime = None):
+def run_window_check(window_name: str, dry_run: bool = False, force_time: datetime = None):
     """Test scheduler for a specific window."""
     print(f"\n{'='*60}")
     print(f"Testing scheduler for window: {window_name}")
@@ -334,7 +334,7 @@ def main():
         if not create_test_data():
             print("Warning: No test data created (may already exist)")
     
-    test_window(args.window, dry_run=args.dry_run, force_time=force_time)
+    run_window_check(args.window, dry_run=args.dry_run, force_time=force_time)
     
     print("\n" + "="*60)
     print("Test complete!")

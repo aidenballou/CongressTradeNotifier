@@ -9,11 +9,11 @@ from typing import Any, Dict, List
 try:
     from db import cursor
     from amounts import parse_amount
-    from filing_utils import normalize_action
+    from filing_utils import is_postable_congress_trade, normalize_action
 except ImportError:  # pragma: no cover
     from src.db import cursor
     from src.amounts import parse_amount
-    from src.filing_utils import normalize_action
+    from src.filing_utils import is_postable_congress_trade, normalize_action
 
 
 def _days_between(start: str | None, end: str | None) -> int | None:
@@ -62,9 +62,6 @@ def build_daily_tape(now_et: datetime) -> Dict[str, Any]:
 
     for row in rows:
         ticker, disc_date, trans_date, member_name, trans_type, amount_raw, amount_val = row
-        key = (member_name or "", disc_date or "")
-        filings.add(key)
-
         # Parse amount
         if amount_val is not None and amount_val > 0:
             value = float(amount_val)
@@ -72,8 +69,10 @@ def build_daily_tape(now_et: datetime) -> Dict[str, Any]:
             value = parse_amount(str(amount_raw) if amount_raw else "")
 
         trade_info = {
+            "symbol": ticker or "",
             "ticker": ticker or "",
             "member_name": member_name or "",
+            "type": trans_type or "",
             "transaction_type": trans_type or "",
             "action_normalized": normalize_action(trans_type or ""),
             "amount": amount_raw,
@@ -82,6 +81,11 @@ def build_daily_tape(now_et: datetime) -> Dict[str, Any]:
             "transaction_date": trans_date,
             "days_to_file": _days_between(trans_date, disc_date),
         }
+        if not is_postable_congress_trade(trade_info):
+            continue
+
+        key = (member_name or "", disc_date or "")
+        filings.add(key)
 
         if ticker:
             trades_by_ticker[ticker].append(trade_info)
@@ -169,13 +173,22 @@ def build_seven_day_theme(now_et: datetime) -> Dict[str, Any]:
 
     for row in rows:
         ticker, disc_date, trans_date, member_name, trans_type, amount_raw, amount_val = row
-        if not ticker:
-            continue
 
         if amount_val is not None and amount_val > 0:
             value = float(amount_val)
         else:
             value = parse_amount(str(amount_raw) if amount_raw else "")
+
+        trade_info = {
+            "symbol": ticker or "",
+            "ticker": ticker or "",
+            "type": trans_type or "",
+            "transaction_type": trans_type or "",
+            "amount": amount_raw,
+            "amount_value": value,
+        }
+        if not is_postable_congress_trade(trade_info):
+            continue
 
         ticker_values[ticker] += value
         if member_name:
@@ -248,16 +261,21 @@ def build_member_spotlight(now_et: datetime) -> Dict[str, Any] | None:
             value = parse_amount(str(amount_raw) if amount_raw else "")
 
         if value > largest_value:
-            largest_value = value
-            largest_trade = {
+            candidate = {
                 "member": member_name or "Unknown",
+                "symbol": ticker or "",
                 "ticker": ticker or "",
                 "amount": amount_raw,
                 "amount_value": value,
+                "type": trans_type or "",
                 "transaction_type": trans_type or "",
                 "disclosure_date": disc_date,
                 "transaction_date": trans_date,
                 "description": asset_desc or comment or "",
             }
+            if not is_postable_congress_trade(candidate):
+                continue
+            largest_value = value
+            largest_trade = candidate
 
     return largest_trade

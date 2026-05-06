@@ -12,6 +12,11 @@ import tweepy
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
+try:
+    from filing_utils import filter_postable_trades, is_postable_congress_trade, normalize_action
+except ImportError:  # pragma: no cover
+    from src.filing_utils import filter_postable_trades, is_postable_congress_trade, normalize_action
+
 # Lazy import for plotting to avoid heavy import when disabled
 try:
     import numpy as np  # type: ignore
@@ -104,26 +109,27 @@ class TwitterClient:
         """
         # Extract trade details
         member_name = f"{trade.get('firstName', '')} {trade.get('lastName', '')}".strip()
+        if not is_postable_congress_trade(trade):
+            raise ValueError("Trade is missing ticker, BUY/SELL direction, or disclosed amount")
+
         raw_action = (trade.get('type') or '').strip()
-        action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
+        action = normalize_action(raw_action)
         ticker = (trade.get('symbol') or '').upper().strip()
-        amount_str = trade.get('amount', '')
         asset_desc = trade.get('assetDescription', '')
 
         # Determine member title (Sen./Rep.)
         title = "Sen." if "senate" in (trade.get('source') or '').lower() else "Rep."
 
         # Format amount for display
-        amount_display = self._format_amount(amount_str)
-        ticker_display = f"${ticker}" if ticker else "an undisclosed ticker"
+        amount_display = self._format_trade_amount(trade)
+        ticker_display = f"${ticker}"
 
         # Generate insight based on trade details
         insight = self._generate_insight(trade)
 
         # Select appropriate emoji
-        emoji = "🚀" if action == "BUY" else "⚠️" if action == "SELL" else "📊"
-
-        amount_phrase = "with an undisclosed amount" if amount_display == "an undisclosed amount" else f"worth {amount_display}"
+        emoji = "🚀" if action == "BUY" else "⚠️"
+        amount_phrase = f"worth {amount_display}"
 
         # Build tweet with character limit consideration
         base_tweet = f"{emoji} {title} {member_name} just disclosed a {action} in {ticker_display} {amount_phrase} today. {insight} #CongressTrades"
@@ -152,10 +158,12 @@ class TwitterClient:
         first = (trade.get('firstName') or '').strip()
         last = (trade.get('lastName') or '').strip()
         member_name = f"{first} {last}".strip()
+        if not is_postable_congress_trade(trade):
+            raise ValueError("Trade is missing ticker, BUY/SELL direction, or disclosed amount")
+
         raw_action = (trade.get('type') or '').strip()
-        action = "BUY" if raw_action.lower() in {"buy", "purchase"} else ("SELL" if raw_action.lower() in {"sell", "sale"} else raw_action.upper() or "TRADE")
+        action = normalize_action(raw_action)
         ticker = (trade.get('symbol') or '').upper().strip()
-        amount_str = trade.get('amount', '')
         trans_date = (trade.get('transactionDate') or '').strip()
         disclosure_date = (trade.get('disclosureDate') or '').strip()
         asset_desc = trade.get('assetDescription', '')
@@ -176,12 +184,12 @@ class TwitterClient:
             return '\n'.join(' '.join(line.split()) for line in lines).strip()
 
         # Compute derived
-        amount_display = self._format_amount(amount_str)
+        amount_display = self._format_trade_amount(trade)
         sector_tag = self._get_sector_hashtag(asset_desc)
-        emoji = "🟢" if action == "BUY" else ("🔴" if action == "SELL" else ("🟣" if 'option' in asset_desc.lower() else "🔵"))
+        emoji = "🟢" if action == "BUY" else "🔴"
         who = f"{title} {member_name}"
         geo = f" ({fmt_district(district)})" if district else ""
-        ticker_or_undisclosed = f"${ticker}" if ticker else "an undisclosed ticker"
+        ticker_or_undisclosed = f"${ticker}"
 
         # Insights data (if present)
         perf = self._build_performance_snippet(ticker, action, trans_date) if ticker else ""
@@ -204,7 +212,7 @@ class TwitterClient:
 
         # Template builders (single responsibility, max 2 lines)
         def amount_phrase() -> str:
-            return "with an undisclosed amount" if amount_display == "an undisclosed amount" else f"worth {amount_display}"
+            return f"worth {amount_display}"
 
         def hook_line(preposition: str = "in", noun: Optional[str] = None, verb: str = "disclosed", include_today: bool = True) -> str:
             action_noun = noun or f"a {action}"
@@ -296,9 +304,6 @@ class TwitterClient:
             # Small bonus for two-line formats
             if '\n' in text:
                 s += 1
-            # Penalize missing ticker
-            if '$' not in text and 'undisclosed ticker' in text:
-                s -= 2
             return s
 
         # Choose using score with deterministic rotation among top candidates to add variety
@@ -366,22 +371,17 @@ class TwitterClient:
         last = (bundle.get('lastName') or '').strip()
         member_name = f"{first} {last}".strip()
         trades = bundle.get('trades', [])
+        trades = filter_postable_trades(trades)
+        if not trades:
+            raise ValueError("Bundle has no trades with ticker, BUY/SELL direction, and disclosed amount")
         title = "Sen." if any('senate' in (t.get('source') or '').lower() for t in trades) else "Rep."
 
         bullet_lines = []
         for t in trades:
             raw_action = (t.get('type') or '').strip()
-            action = (
-                "BUY"
-                if raw_action.lower() in {"buy", "purchase"}
-                else (
-                    "SELL"
-                    if raw_action.lower() in {"sell", "sale"}
-                    else raw_action.upper() or "TRADE"
-                )
-            )
+            action = normalize_action(raw_action)
             symbol = (t.get('symbol') or '').upper().strip()
-            amount_display = self._format_amount(t.get('amount', ''))
+            amount_display = self._format_trade_amount(t)
             bullet_lines.append(f"- {action} ${symbol} ({amount_display})")
 
         total_amount_display = self._format_bundle_amount(trades)
@@ -497,6 +497,22 @@ class TwitterClient:
 
         return amount_str or "an undisclosed amount"
 
+    def _format_trade_amount(self, trade: Dict) -> str:
+        """Format a disclosed trade amount from raw range text or amount_value."""
+        amount_text = self._format_amount(str(trade.get('amount') or trade.get('amount_range') or ''))
+        if amount_text != "an undisclosed amount":
+            return amount_text
+
+        value = trade.get('amount_value')
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            numeric_value = 0.0
+        if numeric_value > 0:
+            return self._humanize_amount(numeric_value)
+
+        raise ValueError("Trade is missing a disclosed amount")
+
     def _aggregate_amounts(self, trades: List[Dict]) -> Tuple[float, float, bool, bool, bool]:
         """Return aggregated (min_sum, max_sum, has_range, has_numbers, has_undisclosed)."""
         total_min = 0.0
@@ -507,6 +523,13 @@ class TwitterClient:
 
         for trade in trades:
             bounds = self._parse_amount_bounds(trade.get('amount', ''))
+            if not bounds:
+                try:
+                    value = float(trade.get('amount_value') or 0)
+                except (TypeError, ValueError):
+                    value = 0.0
+                if value > 0:
+                    bounds = (value, value)
             if not bounds:
                 has_undisclosed = True
                 continue
@@ -525,13 +548,10 @@ class TwitterClient:
         total_min, total_max, has_range, has_numbers, has_undisclosed = self._aggregate_amounts(trades)
 
         if not has_numbers:
-            return "an undisclosed amount"
+            raise ValueError("Bundle has no disclosed trade amounts")
 
-        if has_undisclosed and total_min > 0:
+        if has_undisclosed:
             return f"at least {self._humanize_amount(total_min)}"
-
-        if has_undisclosed and total_min <= 0:
-            return "an undisclosed amount"
 
         if has_range:
             return f"up to {self._humanize_amount(total_max)}"
@@ -1535,6 +1555,7 @@ class TwitterClient:
 
 def _aggregate_trades_by_member(trades: List[Dict]) -> List[Dict]:
     """Group trades by member and disclosure date."""
+    trades = filter_postable_trades(trades)
     grouped: Dict[Tuple[str, str, str], List[Dict]] = {}
     for t in trades:
         key = (t.get('firstName'), t.get('lastName'), t.get('disclosureDate'))
@@ -1551,6 +1572,7 @@ def _aggregate_trades_by_member(trades: List[Dict]) -> List[Dict]:
 
 def post_trades_to_twitter(trades: List[Dict]) -> None:
     """Post multiple trades to Twitter, aggregating by member and day."""
+    trades = filter_postable_trades(trades)
     if not trades:
         logger.info("No trades to post to Twitter")
         return

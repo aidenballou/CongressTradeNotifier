@@ -9,8 +9,10 @@ from typing import Any, Dict, List
 
 try:
     from db import cursor
+    from filing_utils import is_postable_congress_trade
 except ImportError:  # pragma: no cover
     from src.db import cursor
+    from src.filing_utils import is_postable_congress_trade
 
 
 def _split_member_name(member_name: str) -> tuple[str, str]:
@@ -100,7 +102,9 @@ def build_bundles_from_db(now_et: datetime, hours: int = 24) -> List[Dict[str, A
     rows = cursor.fetchall()
     trades: List[Dict[str, Any]] = []
     for row in rows:
-        trades.append(_trade_row_to_dict(row))
+        trade = _trade_row_to_dict(row)
+        if is_postable_congress_trade(trade):
+            trades.append(trade)
 
     # Group by member + disclosure_date
     grouped: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)

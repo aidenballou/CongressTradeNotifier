@@ -10,14 +10,20 @@ try:
     from filing_utils import (
         action_verb,
         extract_trades as _extract_trades,
+        filter_postable_trades,
+        is_postable_congress_trade,
         member_name as _member_name,
+        normalize_action,
         stable_mode as _stable_mode,
     )
 except ImportError:  # pragma: no cover
     from src.filing_utils import (
         action_verb,
         extract_trades as _extract_trades,
+        filter_postable_trades,
+        is_postable_congress_trade,
         member_name as _member_name,
+        normalize_action,
         stable_mode as _stable_mode,
     )
 
@@ -102,11 +108,10 @@ def _trade_amount_text(trade: Dict[str, Any]) -> str:
 
 
 def _action_label(action: Any) -> str:
-    raw = str(action or "")
-    verb = action_verb(raw)
-    if verb == "bought":
+    normalized = normalize_action(str(action or ""))
+    if normalized == "BUY":
         return "BUY"
-    if verb == "sold":
+    if normalized == "SELL":
         return "SELL"
     return "TRADE"
 
@@ -169,6 +174,10 @@ def validate_social_copy(
     if any(claim in lowered for claim in VAGUE_CLAIMS):
         return False
     if " buy vs sell bias" in lowered or " sell vs buy bias" in lowered:
+        return False
+    if any(phrase in lowered for phrase in ("undisclosed amount", "undisclosed ticker", "disclosed asset")):
+        return False
+    if re.search(r"\breported a\s+(trade|traded)\b", lowered):
         return False
     if len(text) < 45 and not allow_no_filings:
         return False
@@ -236,7 +245,9 @@ def compose_thread(
 ) -> List[Dict[str, Any]]:
     """Build a 3-tweet thread: hook+action (tweet 1), context+question (tweet 2), history+stats (tweet 3)."""
 
-    trades = _extract_trades(filing)
+    trades = filter_postable_trades(_extract_trades(filing))
+    if not trades:
+        return []
     member = _member_name(trades[0]) if trades else "A member"
     symbol = _pick_symbol(trades)
     primary_trade = trades[0] if trades else {}
@@ -263,7 +274,7 @@ def compose_thread(
     filed_clause = f" {_filed_delay_phrase(trade_date, disclosure_date)}" if trade_date and disclosure_date else ""
     reason = _reason_it_matters(primary_trade, signal=signal, insight=insight, context=context)
     tweet1 = (
-        f"{member} reported a {action} in {symbol_text or 'a disclosed asset'}{amount_clause}."
+        f"{member} reported a {action} in {symbol_text}{amount_clause}."
         f"{trade_date_clause}{filed_clause} Why it matters: {reason}."
     )
 
@@ -272,7 +283,7 @@ def compose_thread(
 
     tweet1 = _quality_check_tweet1(tweet1)
     if not validate_social_copy(tweet1, ticker_data_exists=bool(symbol), amount_data_exists=bool(amount)):
-        tweet1 = _trim(f"{member} reported a {action} in {symbol_text or 'a disclosed asset'}{amount_clause}. Why it matters: {reason}.")
+        tweet1 = _trim(f"{member} reported a {action} in {symbol_text}{amount_clause}. Why it matters: {reason}.")
 
     # Tweet 2: Interpretation + engagement question (the market context)
     stat_line_options = [
@@ -331,11 +342,11 @@ def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
         tweet1 = _trim("No new congressional filings hit the tape in the last 24 hours.")
         return [{"text": tweet1, "media_symbol": None, "media_trade_date": None}]
 
-    if largest_trade:
+    if largest_trade and is_postable_congress_trade(largest_trade):
         ticker = _ticker_text(largest_trade.get("ticker"))
         member = largest_trade.get("member_name") or "A member"
         amount = _trade_amount_text(largest_trade)
-        action = _action_past(largest_trade.get("action_normalized") or largest_trade.get("transaction_type"))
+        action = _action_label(largest_trade.get("action_normalized") or largest_trade.get("transaction_type"))
         delay = largest_trade.get("days_to_file")
         if delay is None:
             delay = _days_between(largest_trade.get("transaction_date"), largest_trade.get("disclosure_date"))
@@ -347,12 +358,12 @@ def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
             delay_clause = f" Filed {delay} days after the trade."
         tweet1 = _trim(
             f"Today's congressional tape: {total_filings} filing{'s' if total_filings != 1 else ''}. "
-            f"Most notable: {member} reported a {action} in {ticker or 'a disclosed asset'}"
+            f"Most notable: {member} reported a {action} in {ticker}"
             f"{f' worth about {amount}' if amount else ''}.{delay_clause}"
         )
         if not validate_social_copy(tweet1, ticker_data_exists=bool(ticker), amount_data_exists=bool(amount)):
             tweet1 = _trim(
-                f"{member} reported a {action} in {ticker or 'a disclosed asset'}"
+                f"{member} reported a {action} in {ticker}"
                 f"{f' worth about {amount}' if amount else ''}. Why it matters: largest trade in today's batch."
             )
         return [{"text": tweet1, "media_symbol": largest_trade.get("ticker") or None, "media_trade_date": largest_trade.get("transaction_date") or None}]
@@ -368,8 +379,7 @@ def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
         return [{"text": tweet1, "media_symbol": most_bought["ticker"], "media_trade_date": None}]
 
-    tweet1 = _trim(f"Today's congressional tape: {total_filings} filing{'s' if total_filings != 1 else ''}. No single ticker stood out enough for a stronger read.")
-    return [{"text": tweet1, "media_symbol": None, "media_trade_date": None}]
+    return []
 
 
 def compose_seven_day_theme_thread(theme: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -416,12 +426,12 @@ def compose_member_spotlight_thread(spotlight: Dict[str, Any]) -> List[Dict[str,
     trans_type = spotlight.get("transaction_type", "")
     description = spotlight.get("description", "")
 
-    action = action_verb(str(trans_type or ""))
+    action = _action_label(trans_type)
     trade_date = spotlight.get("transaction_date")
     disclosure_date = spotlight.get("disclosure_date")
     reason = description[:90].strip() if description else "largest trade in the batch"
     tweet1 = _trim(
-        f"{member} reported a {action} in {_ticker_text(ticker) or 'a disclosed asset'} "
+        f"{member} reported a {action} in {_ticker_text(ticker)} "
         f"worth about {_format_amount(amount_value)}. "
         f"Trade date: {_format_date(trade_date)}. Filed: {_format_date(disclosure_date)}. "
         f"Why it matters: {reason}."

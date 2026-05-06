@@ -76,7 +76,7 @@ filing = {
     "firstName": "Jade",
     "lastName": "Stone",
     "disclosureDate": "2026-01-10",
-    "trades": [{"firstName": "Jade", "lastName": "Stone", "symbol": "NVDA", "type": "Purchase", "transactionDate": "2026-01-08"}],
+    "trades": [{"firstName": "Jade", "lastName": "Stone", "symbol": "NVDA", "type": "Purchase", "amount": "$50,001 - $100,000", "transactionDate": "2026-01-08"}],
 }
 signal = {"signalType": "CONVICTION", "diagnostics": {"score": 7}}
 insight = {
@@ -171,3 +171,16 @@ def test_validate_social_copy_blocks_banned_and_metric_only_copy():
     assert not validate_social_copy("Net: all buys buy vs sell bias.")
     assert not validate_social_copy("Jade Stone reported a BUY worth about $75K.", ticker_data_exists=True)
     assert not validate_social_copy("Jade Stone reported a BUY in $NVDA.", amount_data_exists=True)
+    assert not validate_social_copy("Jade Stone reported a TRADE in $NVDA worth about $75K.")
+    assert not validate_social_copy("Jade Stone reported a BUY in an undisclosed ticker worth about $75K.")
+
+
+def test_compose_thread_skips_trade_without_action_or_amount():
+    filing, signal, insight, context, stats = _sample()
+    filing["trades"][0]["type"] = ""
+    assert compose_thread(filing, signal, insight, context, stats) == []
+
+    filing, signal, insight, context, stats = _sample()
+    filing["trades"][0]["amount"] = ""
+    filing["trades"][0]["amount_value"] = 0
+    assert compose_thread(filing, signal, insight, context, stats) == []
