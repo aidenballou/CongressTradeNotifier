@@ -282,6 +282,34 @@ def test_midday_falls_back_to_insider_alert_when_nothing_qualifies(monkeypatch):
     assert decision.content_type == "INSIDER_ALERT"
     assert decision.bundle_id == "INSIDER|CLUSTER_BUY|NVDA|2026-W17"
     assert decision.reason == "insider_cluster_buy"
+    assert decision.insider_signal is not None
+
+
+def test_insider_composition_reuses_selection_snapshot(monkeypatch):
+    class _FakeSignal:
+        ticker = "NVDA"
+
+        def bundle_id(self):
+            return "INSIDER|CSUITE_BUY|NVDA|2026-W17"
+
+    signal = _FakeSignal()
+    decision = select_content.ContentDecision(
+        "INSIDER_ALERT",
+        signal.bundle_id(),
+        55,
+        "insider_csuite_buy",
+        insider_signal=signal,
+    )
+    monkeypatch.setattr(
+        select_content,
+        "find_top_insider_signal",
+        lambda: (_ for _ in ()).throw(AssertionError("must not refetch")),
+    )
+    monkeypatch.setattr(select_content, "compose_insider_alert_thread", lambda selected: [{"text": selected.ticker}])
+
+    assert select_content._compose_for_decision(decision, datetime(2026, 4, 21, 12, 10, tzinfo=ET)) == [
+        {"text": "NVDA"}
+    ]
 
 
 def test_insider_alert_skips_when_ticker_recently_posted(monkeypatch):
@@ -418,3 +446,50 @@ def test_scheduler_blocks_invalid_social_copy_before_enqueue(monkeypatch):
     assert result["posted"] is False
     assert result["reason"] == "invalid_social_copy"
     assert enqueue_calls == []
+
+
+def test_scheduler_drops_invalid_optional_reply_but_posts_valid_root(monkeypatch):
+    enqueue_calls = []
+    dispatch_results = iter([{"posted": 0}, {"posted": 1}])
+    now_et = datetime(2024, 1, 2, 8, 35, tzinfo=ET)
+
+    monkeypatch.setattr(select_content, "get_current_window", lambda _now: "MORNING")
+    monkeypatch.setattr(select_content, "is_trading_day", lambda _now: True)
+    monkeypatch.setattr(select_content, "count_posts_today", lambda _today: 0)
+    monkeypatch.setattr(select_content, "build_bundles_from_db", lambda _now, hours=24: [{"id": "bundle_a"}])
+    monkeypatch.setattr(select_content, "filter_unposted", lambda bundles, _today: bundles)
+    monkeypatch.setattr(select_content, "fetch_recent_trades", lambda days, now_et: [])
+    monkeypatch.setattr(select_content, "_score_and_rank_bundles", lambda *_args: [({"id": "bundle_a"}, {}, 9)])
+    monkeypatch.setattr(select_content, "compute_threshold", lambda _count, _window=None: 7)
+    monkeypatch.setattr(select_content, "has_window_posted_today", lambda *_args: False)
+    monkeypatch.setattr(select_content, "has_been_posted", lambda *_args: False)
+    monkeypatch.setattr(select_content, "bundle_id", lambda bundle: bundle["id"])
+    monkeypatch.setattr(
+        select_content,
+        "_compose_for_decision",
+        lambda *_args, **_kwargs: [
+            {"text": VALID_COPY},
+            {"text": "Context: internal dashboard copy"},
+        ],
+    )
+    monkeypatch.setattr(
+        select_content,
+        "enqueue_signal_threads",
+        lambda filings, *_args, **_kwargs: enqueue_calls.append(filings) or 1,
+    )
+    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda *_args, **_kwargs: next(dispatch_results))
+
+    result = select_content.run_scheduler(now_et)
+
+    assert result["posted"] is True
+    assert len(enqueue_calls) == 1
+    assert enqueue_calls[0][0]["thread"] == [{"text": VALID_COPY}]
+
+
+def test_scheduler_surfaces_permanent_queue_failure(monkeypatch):
+    monkeypatch.setattr(select_content, "dispatch_due_threads", lambda _now: {"posted": 0, "failed": 1})
+
+    result = select_content.run_scheduler(datetime(2024, 1, 2, 10, 0, tzinfo=ET))
+
+    assert result["posted"] is False
+    assert result["reason"] == "posting_failed"

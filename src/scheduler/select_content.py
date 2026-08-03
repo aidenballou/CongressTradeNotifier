@@ -56,6 +56,7 @@ class ContentDecision:
     bundle_id: Optional[str]
     score: Optional[int]
     reason: str
+    insider_signal: Optional[Any] = None
 
 
 @dataclass
@@ -118,15 +119,21 @@ def _member_spotlight_qualifies(spotlight: Optional[Dict[str, Any]]) -> bool:
         return False
 
 
-def _thread_has_valid_social_copy(thread: List[Dict[str, Any]]) -> bool:
+def _validated_social_thread(thread: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Require a valid root and discard only invalid optional replies."""
     if not thread:
-        return False
-    for tweet in thread:
+        return []
+
+    valid = []
+    for index, tweet in enumerate(thread):
         text = str(tweet.get("text") or "")
         allow_no_filings = "no new congressional filings" in text.lower()
-        if not validate_social_copy(text, allow_no_filings=allow_no_filings):
-            return False
-    return True
+        if validate_social_copy(text, allow_no_filings=allow_no_filings):
+            valid.append(tweet)
+        elif index == 0:
+            return []
+
+    return valid
 
 
 def _score_and_rank_bundles(bundles: List[Dict[str, Any]], recent_trades: List[Dict[str, Any]], now_et: datetime) -> List[tuple[Dict[str, Any], Dict[str, Any], int]]:
@@ -178,6 +185,7 @@ def _select_insider_alert(today: str) -> Optional[ContentDecision]:
         signal.bundle_id(),
         int(round(signal.score)),
         f"insider_{signal.sub_type.lower()}",
+        insider_signal=signal,
     )
 
 
@@ -338,20 +346,13 @@ def _compose_for_decision(
         return None
 
     elif decision.content_type == "INSIDER_ALERT":
-        # Re-run detection so the compose step uses the same freshly-fetched data
-        # even if detection is called out-of-band. Selection already validated
-        # dedupe and bundle id; we reconcile here to guard against drift.
-        signal = find_top_insider_signal()
+        # Selection and composition must use the same API snapshot. Refetch only
+        # for direct/out-of-band calls that did not originate in this scheduler.
+        signal = decision.insider_signal or find_top_insider_signal()
         if signal is None:
             return None
         if decision.bundle_id and signal.bundle_id() != decision.bundle_id:
-            # The top signal shifted between selection and composition (rare).
-            # Prefer the freshest one as long as it passes the same dedupe check.
-            try:
-                if has_insider_alert_recent(signal.ticker, days=7):
-                    return None
-            except Exception:
-                return None
+            return None
         return compose_insider_alert_thread(signal)
 
     return None
@@ -383,6 +384,16 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     # Drain due queue items on every run (including outside windows / non-trading days).
     drain_summary = dispatch_due_threads(now_et)
     drain_posted = int(drain_summary.get("posted", 0))
+    drain_failed = int(drain_summary.get("failed", 0))
+    if drain_failed > 0:
+        print(f"[Scheduler] window=None action=error reason=posting_failed failed_count={drain_failed}")
+        return SchedulerOutcome(
+            posted=False,
+            reason="posting_failed",
+            window=None,
+            content_type=None,
+            posted_count=drain_posted,
+        ).to_dict()
 
     window = get_current_window(now_et)
     if window is None:
@@ -474,7 +485,8 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
             bundle_id=decision.bundle_id,
             score=decision.score,
         ).to_dict()
-    if not _thread_has_valid_social_copy(thread):
+    validated_thread = _validated_social_thread(thread)
+    if not validated_thread:
         print(f"[Scheduler] window={window} action=skip reason=invalid_social_copy")
         return SchedulerOutcome(
             posted=False,
@@ -485,6 +497,9 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
             bundle_id=decision.bundle_id,
             score=decision.score,
         ).to_dict()
+    if len(validated_thread) < len(thread):
+        print(f"[Scheduler] dropped_invalid_replies={len(thread) - len(validated_thread)}")
+    thread = validated_thread
 
     if os.getenv("SCHEDULER_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
         print(f"[Scheduler] dry_run=1 would_post content_type={decision.content_type} window={window} threshold={threshold} score={decision.score}")
@@ -525,12 +540,24 @@ def run_scheduler(now_et: datetime) -> Dict[str, Any]:
     enqueue_signal_threads([queue_unit], now_et, force_due_now=True)
     dispatch_summary = dispatch_due_threads(now_et, skip_anti_spam=drain_posted == 0)
     posted_now = int(dispatch_summary.get("posted", 0))
+    failed_now = int(dispatch_summary.get("failed", 0))
     total_posted = drain_posted + posted_now
-    if posted_now < 1:
-        print(f"[Scheduler] window={window} action=skip reason=post_failed_or_deferred")
+    if failed_now > 0:
+        print(f"[Scheduler] window={window} action=error reason=posting_failed failed_count={failed_now}")
         return SchedulerOutcome(
             posted=False,
-            reason="post_failed_or_deferred",
+            reason="posting_failed",
+            window=window,
+            content_type=decision.content_type,
+            posted_count=total_posted,
+            bundle_id=decision.bundle_id,
+            score=decision.score,
+        ).to_dict()
+    if posted_now < 1:
+        print(f"[Scheduler] window={window} action=skip reason=post_deferred")
+        return SchedulerOutcome(
+            posted=False,
+            reason="post_deferred",
             window=window,
             content_type=decision.content_type,
             posted_count=total_posted,

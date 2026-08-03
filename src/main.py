@@ -217,7 +217,11 @@ def _maybe_post_fallback_summary(
     fallback_enabled = _env_enabled("SCHEDULER_FALLBACK_ENABLED", default=True)
     fallback_mode = os.getenv("SCHEDULER_FALLBACK_MODE", "summary").strip().lower() or "summary"
     scheduler_reason = str(scheduler_outcome.get("reason") or "")
-    fallback_eligible_reasons = {"not_in_window", "no_content_selected"}
+    fallback_eligible_reasons = {
+        "not_in_window",
+        "no_content_selected",
+        "no_high_quality_content",
+    }
     result = {
         "enabled": fallback_enabled,
         "mode": fallback_mode,
@@ -225,6 +229,7 @@ def _maybe_post_fallback_summary(
         "posted": False,
         "reason": "disabled" if not fallback_enabled else "not_eligible",
         "posted_count": 0,
+        "failed_count": 0,
     }
 
     if not fallback_enabled:
@@ -275,12 +280,16 @@ def _maybe_post_fallback_summary(
     enqueue_signal_threads([queue_unit], now_et, force_due_now=True)
     dispatch_summary = dispatch_due_threads(now_et)
     posted_now = int(dispatch_summary.get("posted", 0))
+    failed_now = int(dispatch_summary.get("failed", 0))
     result["posted_count"] = posted_now
-    if posted_now > 0:
+    result["failed_count"] = failed_now
+    if failed_now > 0:
+        result["reason"] = "posting_failed"
+    elif posted_now > 0:
         result["posted"] = True
         result["reason"] = "posted"
     else:
-        result["reason"] = "post_failed_or_deferred"
+        result["reason"] = "post_deferred"
     return result
 
 
@@ -367,6 +376,12 @@ def main():
         f"posted_count={total_posted} "
         f"fallback_used={fallback_result['posted']}"
     )
+
+    fatal_reasons = {"composition_failed", "invalid_social_copy", "posting_failed"}
+    if scheduler_result.get("reason") in fatal_reasons:
+        raise RuntimeError(f"Scheduler failed: {scheduler_result.get('reason')}")
+    if fallback_result.get("reason") == "posting_failed":
+        raise RuntimeError("Fallback posting failed")
 
 
 if __name__ == "__main__":

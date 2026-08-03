@@ -1,6 +1,6 @@
 """Tests for scheduler window evaluation."""
 
-from datetime import datetime, time
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -44,32 +44,18 @@ def test_get_current_window_exact_times():
     assert get_current_window(evening) == "EVENING"
 
 
-def test_get_current_window_within_tolerance():
-    """Test window detection within tolerance (14 min)."""
-    morning_plus = datetime(2024, 1, 1, 8, 40, 0, tzinfo=ET)
-    assert get_current_window(morning_plus) == "MORNING"
-
-    morning_minus = datetime(2024, 1, 1, 8, 22, 0, tzinfo=ET)
-    assert get_current_window(morning_minus) == "MORNING"
-
-    midday_plus = datetime(2024, 1, 1, 12, 24, 0, tzinfo=ET)
-    assert get_current_window(midday_plus) == "MIDDAY"
-
-    morning_edge = datetime(2024, 1, 1, 8, 49, 0, tzinfo=ET)
-    assert get_current_window(morning_edge) == "MORNING"
+def test_get_current_window_catches_up_delayed_runs():
+    """Observed delayed GitHub runs must still process the latest due window."""
+    assert get_current_window(datetime(2024, 1, 1, 11, 13, tzinfo=ET)) == "MORNING"
+    assert get_current_window(datetime(2024, 1, 1, 13, 19, tzinfo=ET)) == "MIDDAY"
+    assert get_current_window(datetime(2024, 1, 1, 16, 38, tzinfo=ET)) == "POWER_HOUR"
+    assert get_current_window(datetime(2024, 1, 1, 20, 45, tzinfo=ET)) == "EVENING"
 
 
-def test_get_current_window_outside_tolerance():
-    """Test window detection outside tolerance (14 min)."""
-    too_late = datetime(2024, 1, 1, 8, 50, 0, tzinfo=ET)
-    assert get_current_window(too_late) is None
-
-    between = datetime(2024, 1, 1, 10, 0, 0, tzinfo=ET)
-    assert get_current_window(between) is None
+def test_get_current_window_does_not_run_before_first_target():
+    assert get_current_window(datetime(2024, 1, 1, 8, 34, tzinfo=ET)) is None
 
 
-def test_get_current_window_none():
-    """Test that times far from windows return None."""
-    # Random time
-    random_time = datetime(2024, 1, 1, 14, 30, 0, tzinfo=ET)
-    assert get_current_window(random_time) is None
+def test_get_current_window_advances_only_after_next_target():
+    assert get_current_window(datetime(2024, 1, 1, 12, 9, tzinfo=ET)) == "MORNING"
+    assert get_current_window(datetime(2024, 1, 1, 12, 10, tzinfo=ET)) == "MIDDAY"

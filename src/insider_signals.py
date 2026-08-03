@@ -381,8 +381,8 @@ def _tweet2_context(signal: InsiderSignal) -> str:
         f"{shares:,.0f} shares at ~${price:,.2f}" if shares and price else "size alone is unusual"
     )
     return _trim(
-        f"Open-market buys of this scale ({detail}) are rare — insiders buy for only "
-        f"one reason, and it isn't diversification. Worth watching the next few sessions?"
+        f"This open-market purchase ({detail}) is materially larger than routine insider "
+        f"activity. Size alone is not a thesis, but it makes follow-through worth tracking."
     )
 
 
@@ -397,7 +397,7 @@ def _tweet3_framing(signal: InsiderSignal) -> str:
         )
     if signal.sub_type == "CSUITE_BUY":
         return _trim(
-            f"Context: {total} of executive buying on ${signal.ticker} {window}. "
+            f"Executive buying on ${signal.ticker} totals {total} {window}. "
             f"History helps frame it, not predict it. Source: SEC Form 4."
         )
     return _trim(

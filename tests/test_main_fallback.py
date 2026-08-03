@@ -3,6 +3,8 @@ from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 import main as main_module  # noqa: E402
@@ -103,7 +105,13 @@ def test_main_uses_fallback_when_scheduler_skips(monkeypatch):
     monkeypatch.setattr(
         main_module,
         "run_scheduler",
-        lambda _now: {"posted": False, "reason": "not_in_window", "window": None, "content_type": None, "posted_count": 0},
+        lambda _now: {
+            "posted": False,
+            "reason": "no_high_quality_content",
+            "window": "MORNING",
+            "content_type": None,
+            "posted_count": 0,
+        },
     )
     monkeypatch.setattr(main_module, "has_been_posted", lambda *_args: False)
     monkeypatch.setattr(
@@ -170,6 +178,24 @@ def test_main_skips_fallback_when_no_disclosures(monkeypatch):
     main_module.main()
 
     assert enqueue_calls == []
+
+
+def test_main_fails_loudly_on_scheduler_logic_error(monkeypatch):
+    monkeypatch.setattr(main_module, "run_delta", lambda: ([], {"fetched": 0, "skipped": 0, "inserted": 0}))
+    monkeypatch.setattr(
+        main_module,
+        "run_scheduler",
+        lambda _now: {
+            "posted": False,
+            "reason": "invalid_social_copy",
+            "window": "MORNING",
+            "content_type": "INSIDER_ALERT",
+            "posted_count": 0,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="Scheduler failed: invalid_social_copy"):
+        main_module.main()
 
 
 def test_main_fallback_respects_dedupe(monkeypatch):

@@ -3,8 +3,9 @@ name: Daily Main Runner
 
 on:
   schedule:
-    # every 15 minutes to support queue draining and morning release windows
-    - cron: "*/15 * * * *"
+    # Every 15 minutes on off-peak minute marks. The application catches up
+    # missed windows when GitHub delays or drops a scheduled event.
+    - cron: "11,26,41,56 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -20,12 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.x"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
@@ -43,14 +44,14 @@ jobs:
       - name: Restore trades database from previous run
         id: restore-db
         if: steps.get-prev-run.outputs.run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trades-db
           run-id: ${{ steps.get-prev-run.outputs.run_id }}
           github-token: ${{ github.token }}
 
       - name: Restore email lock files
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .email_sent_*.lock
           key: email-locks-${{ github.run_id }}
@@ -86,7 +87,7 @@ jobs:
 
       - name: Upload trades database artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trades-db
           path: trades.sqlite3
@@ -94,7 +95,7 @@ jobs:
 
       - name: Save email lock files
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .email_sent_*.lock
           key: email-locks-${{ github.run_id }}

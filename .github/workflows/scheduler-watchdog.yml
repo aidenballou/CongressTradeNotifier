@@ -2,7 +2,7 @@ name: Scheduler Watchdog
 
 on:
   schedule:
-    - cron: "7 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,8 +19,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE_TITLE: "Scheduler watchdog: Daily Main Runner appears stale"
-          WARNING_MINUTES: "90"
-          FAILURE_MINUTES: "120"
+          WARNING_MINUTES: "45"
+          FAILURE_MINUTES: "90"
         run: |
           set -euo pipefail
 

@@ -7,6 +7,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 import insider_signals
+from tweet_composer import validate_social_copy
 
 
 def _trade(
@@ -143,6 +144,23 @@ def test_compose_csuite_thread_surfaces_role_and_size():
     assert "CEO" in root_text
     assert "$TSLA" in root_text
     assert "$2.0M" in root_text
+
+
+def test_every_insider_signal_type_composes_valid_social_copy():
+    signal_inputs = [
+        [
+            _trade("ACME", "ALICE SMITH", "Officer: Chief Executive Officer", 500_000, csuite=True),
+            _trade("ACME", "BOB JONES", "Director", 150_000, director=True),
+        ],
+        [_trade("NVDA", "JANE DOE", "Officer: Chief Financial Officer", 400_000, csuite=True)],
+        [_trade("XYZ", "SOMEONE", "VP of Sales", 1_500_000)],
+    ]
+
+    for trades in signal_inputs:
+        signal = insider_signals.detect_insider_signals(trades)[0]
+        thread = insider_signals.compose_insider_alert_thread(signal)
+        assert len(thread) == 3
+        assert all(validate_social_copy(tweet["text"]) for tweet in thread), signal.sub_type
 
 
 def test_bundle_id_is_stable_per_week():

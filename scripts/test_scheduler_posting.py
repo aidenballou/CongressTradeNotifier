@@ -156,7 +156,7 @@ def run_window_check(window_name: str, dry_run: bool = False, force_time: dateti
             microsecond=0
         )
         
-        # If the window time has passed today, use it anyway (still within tolerance)
+        # If the window target has passed today, exercise that due window.
         if test_time > now_et:
             # Use yesterday's window time
             test_time = test_time - timedelta(days=1)

@@ -174,9 +174,11 @@ The scheduler is window-aware (ET) and runs selection logic for:
 - `MORNING` (08:35 target),
 - `MIDDAY` (12:10 target),
 - `POWER_HOUR` (15:50 target),
-- `EVENING` (19:30 target),
+- `EVENING` (19:30 target).
 
-with tolerance around each target time. It enforces:
+Each target becomes due at its scheduled time and remains eligible until the
+next target. This catch-up behavior handles delayed or dropped GitHub schedule
+events, while persisted per-window guards prevent duplicates. It enforces:
 
 - per-window de-duplication,
 - daily post limits,
@@ -187,7 +189,7 @@ If no scheduler post occurs for a run, fallback summary posting can be enabled v
 
 ## CI Automation
 
-- `daily-run-main.yml` runs every 15 minutes, restores the previous DB artifact, executes `src/main.py`, then uploads the updated database artifact.
+- `daily-run-main.yml` requests off-peak runs every 15 minutes, restores the previous DB artifact, executes `src/main.py`, then uploads the updated database artifact. Delayed runs catch up the latest due window.
 - `scheduler-watchdog.yml` checks run cadence hourly and opens/comments/closes a GitHub issue if the main workflow appears stale.
 
 ## Database Notes

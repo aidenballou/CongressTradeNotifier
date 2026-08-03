@@ -7,8 +7,6 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
-TOLERANCE_MINUTES = 14
-
 WINDOWS = {
     "MORNING": time(8, 35),
     "MIDDAY": time(12, 10),
@@ -24,22 +22,15 @@ def is_trading_day(now_et: datetime) -> bool:
 
 
 def get_current_window(now_et: datetime) -> Optional[str]:
-    """Return window name if current time is within tolerance of any window, else None."""
+    """Return the latest posting window due today.
+
+    GitHub schedules are best-effort and can run hours late. A due window remains
+    eligible until the next target arrives; per-window database guards prevent a
+    delayed run from posting the same window twice.
+    """
 
     now_et = now_et.astimezone(ET)
     current_time = now_et.time()
 
-    for window_name, target_time in WINDOWS.items():
-        # Calculate minutes difference
-        current_minutes = current_time.hour * 60 + current_time.minute
-        target_minutes = target_time.hour * 60 + target_time.minute
-
-        diff_minutes = abs(current_minutes - target_minutes)
-        # Handle wrap-around (e.g., 23:59 vs 00:01)
-        if diff_minutes > 720:  # More than 12 hours, wrap around
-            diff_minutes = 1440 - diff_minutes
-
-        if diff_minutes <= TOLERANCE_MINUTES:
-            return window_name
-
-    return None
+    due = [name for name, target in WINDOWS.items() if current_time >= target]
+    return due[-1] if due else None
