@@ -47,8 +47,18 @@ def send_summary(new_trades: Iterable[Dict[str, Any]], insights: Optional[Dict[s
     recipient = os.getenv("EMAIL_RECIPIENT")
 
     if not all([smtp_host, smtp_port, smtp_user, smtp_pass, recipient]):
-        print("Missing required SMTP environment variables")
-        return
+        missing = [
+            name
+            for name, value in (
+                ("SMTP_HOST", smtp_host),
+                ("SMTP_PORT", smtp_port),
+                ("SMTP_USER", smtp_user),
+                ("SMTP_PASS", smtp_pass),
+                ("EMAIL_RECIPIENT", recipient),
+            )
+            if not value
+        ]
+        raise RuntimeError(f"Missing required email configuration: {', '.join(missing)}")
 
     # Type assertions since we've verified they're not None
     smtp_host = cast(str, smtp_host)
@@ -166,7 +176,7 @@ def send_summary(new_trades: Iterable[Dict[str, Any]], insights: Optional[Dict[s
     msg["From"] = smtp_user
     msg["To"] = recipient
 
-    with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
+    with smtplib.SMTP(smtp_host, int(smtp_port), timeout=30) as server:
         server.starttls()
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)

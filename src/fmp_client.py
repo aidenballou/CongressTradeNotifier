@@ -9,17 +9,19 @@ API_KEY = os.getenv("FMP_API_KEY")
 BASE_URL = "https://financialmodelingprep.com"
 
 def fetch_senate_trades():
+    if not API_KEY:
+        raise RuntimeError("FMP_API_KEY is required")
     url = f"{BASE_URL}/stable/senate-latest?page=0&limit=10&apikey={API_KEY}"
     print(f"[Senate] Making request to: {url}")
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         print(f"[Senate] HTTP Status Code: {response.status_code}")
         print(f"[Senate] Response Headers: {dict(response.headers)}")
         
         if response.status_code != 200:
             print(f"[Senate] Error response: {response.text}")
-            return []
+            raise RuntimeError(f"Senate trade feed returned HTTP {response.status_code}")
         
         data = response.json()
         print(f"[Senate] Response type: {type(data)}")
@@ -33,26 +35,27 @@ def fetch_senate_trades():
             for trade in data:
                 trade['source'] = 'senate'
         else:
-            print(f"[Senate] Not a list, keys: {data.keys() if isinstance(data, dict) else 'N/A'}")
+            raise RuntimeError("Senate trade feed returned an unexpected response")
         
         return data if isinstance(data, list) else []
         
-    except Exception as e:
-        print(f"[Senate] Exception: {e}")
-        return []
+    except requests.RequestException as e:
+        raise RuntimeError(f"Senate trade feed request failed: {e}") from e
 
 def fetch_house_trades():
+    if not API_KEY:
+        raise RuntimeError("FMP_API_KEY is required")
     url = f"{BASE_URL}/stable/house-latest?page=0&limit=10&apikey={API_KEY}"
     print(f"[House] Making request to: {url}")
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         print(f"[House] HTTP Status Code: {response.status_code}")
         print(f"[House] Response Headers: {dict(response.headers)}")
         
         if response.status_code != 200:
             print(f"[House] Error response: {response.text}")
-            return []
+            raise RuntimeError(f"House trade feed returned HTTP {response.status_code}")
         
         data = response.json()
         print(f"[House] Response type: {type(data)}")
@@ -66,13 +69,12 @@ def fetch_house_trades():
             for trade in data:
                 trade['source'] = 'house'
         else:
-            print(f"[House] Not a list, keys: {data.keys() if isinstance(data, dict) else 'N/A'}")
+            raise RuntimeError("House trade feed returned an unexpected response")
         
         return data if isinstance(data, list) else []
         
-    except Exception as e:
-        print(f"[House] Exception: {e}")
-        return []
+    except requests.RequestException as e:
+        raise RuntimeError(f"House trade feed request failed: {e}") from e
 
 def main():
     new, _ = run_delta()
