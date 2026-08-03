@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -7,6 +8,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from emailer import send_summary
+from filing_utils import filter_postable_trades, member_name, normalize_action
 from insider import find_recent_insider_activity
 from insights import build_highlights_text, compute_trade_insights
 from notifier import run_delta
@@ -43,29 +45,146 @@ def _env_enabled(name: str, default: bool) -> bool:
 
 
 def _truncate(text: str, limit: int = 280) -> str:
-    compact = " ".join(text.split())
+    compact = "\n".join(" ".join(line.split()) for line in text.splitlines() if line.strip())
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1].rstrip() + "…"
 
 
-def _format_fallback_root(trades_today: list[dict], today: str) -> str:
-    tickers = []
-    members = []
-    for trade in trades_today:
-        symbol = str(trade.get("symbol") or "").upper().strip()
-        if symbol:
-            tickers.append(symbol)
-        member = f"{trade.get('firstName', '')} {trade.get('lastName', '')}".strip()
-        if member:
-            members.append(member)
+def _human_amount(value: float) -> str:
+    if value >= 1_000_000:
+        scaled = value / 1_000_000
+        return f"${scaled:.1f}M".replace(".0M", "M")
+    if value >= 1_000:
+        scaled = value / 1_000
+        return f"${scaled:.1f}K".replace(".0K", "K")
+    return f"${value:,.0f}"
 
-    top_tickers = ", ".join(sorted(set(tickers))[:3]) or "multiple tickers"
-    top_members = ", ".join(sorted(set(members))[:3]) or "multiple members"
-    return _truncate(
-        f"Congress disclosures update ({today}): {len(trades_today)} new filings. "
-        f"Names: {top_members}. Tickers: {top_tickers}. #CongressTrades"
+
+def _amount_bounds(trade: dict) -> tuple[float, float] | None:
+    raw = str(trade.get("amount") or trade.get("amount_range") or "")
+    values = [float(value.replace(",", "")) for value in re.findall(r"[\d,]+(?:\.\d+)?", raw)]
+    if values:
+        return min(values), max(values)
+    try:
+        value = float(trade.get("amount_value") or 0)
+    except (TypeError, ValueError):
+        return None
+    return (value, value) if value > 0 else None
+
+
+def _format_amount_range(trade: dict) -> str:
+    bounds = _amount_bounds(trade)
+    if not bounds:
+        return "amount undisclosed"
+    low, high = bounds
+    if low == high:
+        return _human_amount(high)
+    return f"{_human_amount(low)}–{_human_amount(high)}"
+
+
+def _member_label(trade: dict) -> str:
+    name = member_name(trade) or "A member of Congress"
+    source = str(trade.get("source") or "").lower()
+    if source == "house":
+        return f"Rep. {name}"
+    if source == "senate":
+        return f"Sen. {name}"
+    return name
+
+
+def _parse_trade_date(value: object) -> datetime | None:
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+
+
+def _timing_line(trades: list[dict]) -> str:
+    transaction_dates = [
+        parsed for trade in trades if (parsed := _parse_trade_date(trade.get("transactionDate")))
+    ]
+    lags = []
+    for trade in trades:
+        transaction_date = _parse_trade_date(trade.get("transactionDate"))
+        disclosure_date = _parse_trade_date(trade.get("disclosureDate"))
+        if transaction_date and disclosure_date:
+            lags.append(max((disclosure_date - transaction_date).days, 0))
+    if not transaction_dates or not lags:
+        return ""
+
+    earliest = min(transaction_dates)
+    latest = max(transaction_dates)
+    date_text = earliest.strftime("%b %d").replace(" 0", " ")
+    if latest != earliest:
+        latest_text = latest.strftime("%b %d").replace(" 0", " ")
+        date_text = f"{date_text}–{latest_text}"
+
+    lag_text = str(min(lags))
+    if max(lags) != min(lags):
+        lag_text = f"{min(lags)}–{max(lags)}"
+    trade_word = "Trade" if len(trades) == 1 else "Trades"
+    return f"{trade_word} made {date_text}; filed {lag_text} day{'s' if lag_text != '1' else ''} later."
+
+
+def _format_fallback_root(trades_today: list[dict], today: str) -> str:
+    trades = filter_postable_trades(trades_today)
+    if not trades:
+        return ""
+
+    trades.sort(
+        key=lambda trade: (
+            -((_amount_bounds(trade) or (0, 0))[1]),
+            str(trade.get("symbol") or ""),
+        )
     )
+    members = list(dict.fromkeys(_member_label(trade) for trade in trades))
+    actions = [normalize_action(str(trade.get("type") or trade.get("transaction_type") or "")) for trade in trades]
+
+    if len(trades) == 1:
+        trade = trades[0]
+        action = "purchase" if actions[0] == "BUY" else "sale"
+        ticker = str(trade.get("symbol") or trade.get("ticker") or "").replace("$", "").upper()
+        lines = [
+            f"{members[0]} disclosed a stock {action}: ${ticker} — {_format_amount_range(trade)}."
+        ]
+    elif len(trades) <= 3 and len(members) == 1:
+        if len(set(actions)) == 1:
+            action = "purchases" if actions[0] == "BUY" else "sales"
+            lines = [f"{members[0]} disclosed {len(trades)} stock {action}:"]
+        else:
+            lines = [f"{members[0]} disclosed {len(trades)} stock trades:"]
+        for index, trade in enumerate(trades):
+            ticker = str(trade.get("symbol") or trade.get("ticker") or "").replace("$", "").upper()
+            ticker = f"${ticker}" if index == 0 else ticker
+            action_prefix = ""
+            if len(set(actions)) > 1:
+                action_prefix = "Bought " if actions[index] == "BUY" else "Sold "
+            lines.append(f"• {action_prefix}{ticker} — {_format_amount_range(trade)}")
+    else:
+        buys = actions.count("BUY")
+        sales = actions.count("SELL")
+        largest = trades[0]
+        largest_ticker = str(largest.get("symbol") or largest.get("ticker") or "").replace("$", "").upper()
+        actor = members[0] if len(members) == 1 else f"{len(members)} members of Congress"
+        lines = [
+            f"{actor} disclosed {len(trades)} stock trades: {buys} buys, {sales} sales.",
+            f"Largest: {'bought' if actions[0] == 'BUY' else 'sold'} ${largest_ticker} — {_format_amount_range(largest)}.",
+        ]
+
+    bounds = [_amount_bounds(trade) for trade in trades]
+    known_bounds = [bound for bound in bounds if bound]
+    if len(trades) > 1 and known_bounds:
+        total_low = sum(bound[0] for bound in known_bounds)
+        total_high = sum(bound[1] for bound in known_bounds)
+        lines.append(f"Combined disclosed range: {_human_amount(total_low)}–{_human_amount(total_high)}.")
+
+    timing = _timing_line(trades)
+    if timing:
+        lines.append(timing)
+
+    suffix = "#CongressTrades"
+    return f"{_truncate(chr(10).join(lines), 280 - len(suffix) - 1)}\n{suffix}"
 
 
 def _fallback_bundle_id(trades_today: list[dict], today: str) -> str:
@@ -132,10 +251,15 @@ def _maybe_post_fallback_summary(
         result["reason"] = "already_posted"
         return result
 
+    tweet_text = _format_fallback_root(trades_today, today)
+    if not tweet_text:
+        result["reason"] = "no_postable_disclosures"
+        return result
+
     result["attempted"] = True
     thread = [
         {
-            "text": _format_fallback_root(trades_today, today),
+            "text": tweet_text,
             "media_symbol": None,
             "media_trade_date": None,
         }

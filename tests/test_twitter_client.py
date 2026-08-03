@@ -271,7 +271,7 @@ class TestTwitterClient:
         tweet = client._format_multi_trade_tweet(bundle)
         assert 'just disclosed up to $65k in trades today!' in tweet
         assert '- BUY $EXC (up to $50k)' in tweet
-        assert '- BUY $SO (up to $15k)' in tweet
+        assert '- BUY SO (up to $15k)' in tweet
         assert '#CongressTrades' in tweet.split('\n')[-1]
         assert tweet.count('\n') >= 3  # header + 2 bullets + hashtag line
         assert len(tweet) <= 280
@@ -502,6 +502,25 @@ class TestTwitterClient:
         mock_client_instance.create_tweet.assert_called_once_with(
             text="hello world",
             in_reply_to_tweet_id="41",
+        )
+
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_post_with_retry_keeps_only_one_cashtag(self, mock_client):
+        mock_client_instance = Mock()
+        mock_client.return_value = mock_client_instance
+        mock_client_instance.create_tweet.return_value = Mock(data={'id': '42'})
+
+        client = TwitterClient()
+        client._post_with_retry("Bought $AAPL and sold $MSFT; range $15K–$50K")
+
+        mock_client_instance.create_tweet.assert_called_once_with(
+            text="Bought $AAPL and sold MSFT; range $15K–$50K",
         )
 
     @patch.dict('os.environ', {

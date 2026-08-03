@@ -142,6 +142,9 @@ def test_seven_day_theme_root_avoids_dashboard_label():
     assert len(thread) == 1
     assert not thread[0]["text"].startswith("7-Day Theme:")
     assert "$NVDA" in thread[0]["text"]
+    assert "$125K" in thread[0]["text"]
+    assert "MSFT ($50K), AAPL ($30K)" in thread[0]["text"]
+    assert "$MSFT" not in thread[0]["text"]
     assert len(thread[0]["text"]) <= 280
 
 

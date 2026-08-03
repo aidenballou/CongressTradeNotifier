@@ -357,7 +357,7 @@ def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
         else:
             delay_clause = f" Filed {delay} days after the trade."
         tweet1 = _trim(
-            f"Today's congressional tape: {total_filings} filing{'s' if total_filings != 1 else ''}. "
+            f"Today's congressional tape: {total_filings} disclosed trade{'s' if total_filings != 1 else ''}. "
             f"Most notable: {member} reported a {action} in {ticker}"
             f"{f' worth about {amount}' if amount else ''}.{delay_clause}"
         )
@@ -393,22 +393,37 @@ def compose_seven_day_theme_thread(theme: Dict[str, Any]) -> List[Dict[str, Any]
         return [{"text": tweet1, "media_symbol": None, "media_trade_date": None}]
 
     top_cluster = theme.get("top_cluster") or (clusters[0] if clusters else None)
-    top_tickers_str = ", ".join([_ticker_text(t["ticker"]) for t in top_5[:3] if t.get("ticker")])
     buyer = theme.get("top_buyer_member") or "not concentrated in one member"
     if top_cluster:
         cluster_ticker = _ticker_text(top_cluster.get("ticker"))
         member_count = top_cluster.get("member_count", 0)
+        cluster_value = next(
+            (float(item.get("value") or 0) for item in top_5 if item.get("ticker") == top_cluster.get("ticker")),
+            0.0,
+        )
+        next_names = ", ".join(
+            f"{item['ticker']} ({_format_amount(float(item.get('value') or 0))})"
+            for item in top_5
+            if item.get("ticker") and item.get("ticker") != top_cluster.get("ticker")
+        )
         tweet1 = _trim(
-            f"Congress clustered around {cluster_ticker} this week. "
-            f"{member_count} members reported trades; top names: {top_tickers_str}. "
+            f"Congress clustered around {cluster_ticker}: {member_count} members reported "
+            f"about {_format_amount(cluster_value)} in trades this week. "
+            f"{f'Next by disclosed value: {next_names}. ' if next_names else ''}"
             f"Biggest reported buyer: {buyer}."
         )
     else:
         leader = top_5[0]
         ticker = _ticker_text(leader.get("ticker"))
+        next_names = ", ".join(
+            f"{item['ticker']} ({_format_amount(float(item.get('value') or 0))})"
+            for item in top_5[1:3]
+            if item.get("ticker")
+        )
         tweet1 = _trim(
             f"{ticker} led congressional trading this week at about {_format_amount(leader.get('value', 0.0))}. "
-            f"Top names: {top_tickers_str}. Watch whether this becomes a broader sector cluster."
+            f"{f'Next by disclosed value: {next_names}. ' if next_names else ''}"
+            f"Biggest reported buyer: {buyer}."
         )
 
     return [{"text": tweet1, "media_symbol": top_5[0]["ticker"] if top_5 else None, "media_trade_date": None}]

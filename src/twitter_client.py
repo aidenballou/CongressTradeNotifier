@@ -377,12 +377,13 @@ class TwitterClient:
         title = "Sen." if any('senate' in (t.get('source') or '').lower() for t in trades) else "Rep."
 
         bullet_lines = []
-        for t in trades:
+        for index, t in enumerate(trades):
             raw_action = (t.get('type') or '').strip()
             action = normalize_action(raw_action)
             symbol = (t.get('symbol') or '').upper().strip()
             amount_display = self._format_trade_amount(t)
-            bullet_lines.append(f"- {action} ${symbol} ({amount_display})")
+            ticker = f"${symbol}" if index == 0 else symbol
+            bullet_lines.append(f"- {action} {ticker} ({amount_display})")
 
         total_amount_display = self._format_bundle_amount(trades)
         header = f"📊 {title} {member_name} just disclosed {total_amount_display} in trades today!"
@@ -807,6 +808,17 @@ class TwitterClient:
             tweet_text: The tweet content to post
             max_retries: Maximum number of retry attempts
         """
+        cashtags_seen = 0
+
+        def keep_first_cashtag(match: re.Match) -> str:
+            nonlocal cashtags_seen
+            cashtags_seen += 1
+            return match.group(0) if cashtags_seen == 1 else match.group(0)[1:]
+
+        # This X account rejects posts with more than one $SYMBOL cashtag. Dollar
+        # amounts are unaffected because cashtags must start with a letter.
+        tweet_text = re.sub(r"\$[A-Za-z][A-Za-z0-9.]*", keep_first_cashtag, tweet_text)
+
         for attempt in range(max_retries + 1):
             try:
                 create_kwargs: Dict[str, object] = {"text": tweet_text}

@@ -24,6 +24,73 @@ def _trade_for_today():
     }
 
 
+def test_fallback_tweet_includes_direction_amounts_and_reporting_lag():
+    trades = [
+        {
+            "firstName": "Gilbert",
+            "lastName": "Cisneros",
+            "source": "house",
+            "symbol": "RBC",
+            "type": "Sale",
+            "amount": "$1,001 - $15,000",
+            "transactionDate": "2026-06-30",
+            "disclosureDate": "2026-07-03",
+        },
+        {
+            "firstName": "Gilbert",
+            "lastName": "Cisneros",
+            "source": "house",
+            "symbol": "SFTBY",
+            "type": "Sale",
+            "amount": "$1,001 - $15,000",
+            "transactionDate": "2026-06-30",
+            "disclosureDate": "2026-07-03",
+        },
+    ]
+
+    tweet = main_module._format_fallback_root(trades, "2026-07-03")
+
+    assert tweet == (
+        "Rep. Gilbert Cisneros disclosed 2 stock sales:\n"
+        "• $RBC — $1K–$15K\n"
+        "• SFTBY — $1K–$15K\n"
+        "Combined disclosed range: $2K–$30K.\n"
+        "Trades made Jun 30; filed 3 days later.\n"
+        "#CongressTrades"
+    )
+    assert len(tweet) <= 280
+    assert tweet.count("$") == 7  # Six dollar amounts plus one X cashtag.
+
+
+def test_fallback_tweet_summarizes_large_batches_with_facts():
+    trades = [
+        {
+            "firstName": "Gilbert",
+            "lastName": "Cisneros",
+            "source": "house",
+            "symbol": symbol,
+            "type": action,
+            "amount": amount,
+            "transactionDate": transaction_date,
+            "disclosureDate": "2026-07-03",
+        }
+        for symbol, action, amount, transaction_date in [
+            ("LLY", "Purchase", "$50,001 - $100,000", "2026-06-10"),
+            ("IBM", "Purchase", "$15,001 - $50,000", "2026-06-16"),
+            ("MSFT", "Sale", "$15,001 - $50,000", "2026-06-16"),
+            ("RBC", "Sale", "$1,001 - $15,000", "2026-06-30"),
+        ]
+    ]
+
+    tweet = main_module._format_fallback_root(trades, "2026-07-03")
+
+    assert "Rep. Gilbert Cisneros disclosed 4 stock trades: 2 buys, 2 sales." in tweet
+    assert "Largest: bought $LLY — $50K–$100K." in tweet
+    assert "Combined disclosed range: $81K–$215K." in tweet
+    assert "Trades made Jun 10–Jun 30; filed 3–23 days later." in tweet
+    assert len(tweet) <= 280
+
+
 def test_main_uses_fallback_when_scheduler_skips(monkeypatch):
     trade = _trade_for_today()
     enqueue_calls = []
