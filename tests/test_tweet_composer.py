@@ -48,7 +48,7 @@ def test_compose_thread_shape_and_limits():
 
     thread = compose_thread(filing, signal, insight, context, stats)
 
-    assert len(thread) == 3
+    assert len(thread) == 2
     assert all("text" in tweet for tweet in thread)
     assert all(len(tweet["text"]) <= 280 for tweet in thread)
     assert thread[0]["media_symbol"] == "NVDA"

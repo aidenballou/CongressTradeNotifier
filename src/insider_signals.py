@@ -386,28 +386,8 @@ def _tweet2_context(signal: InsiderSignal) -> str:
     )
 
 
-def _tweet3_framing(signal: InsiderSignal) -> str:
-    total = _format_amount(signal.total_value)
-    window = _window_phrase(signal)
-    if signal.sub_type == "CLUSTER_BUY":
-        return _trim(
-            f"Aggregate open-market buying on ${signal.ticker}: {total} across "
-            f"{signal.unique_insiders} insiders {window}. Track the follow-through, "
-            f"not the headline. Form 4 filings via SEC."
-        )
-    if signal.sub_type == "CSUITE_BUY":
-        return _trim(
-            f"Executive buying on ${signal.ticker} totals {total} {window}. "
-            f"History helps frame it, not predict it. Source: SEC Form 4."
-        )
-    return _trim(
-        f"Recap: ${signal.ticker} saw {total} of open-market insider buying {window}. "
-        f"Treat this as context, not a trade trigger. Source: SEC Form 4."
-    )
-
-
 def compose_insider_alert_thread(signal: InsiderSignal) -> List[Dict[str, Any]]:
-    """Build a 3-tweet thread for an :class:`InsiderSignal`.
+    """Build a 2-tweet thread for an :class:`InsiderSignal`.
 
     The root tweet carries the chart (via ``media_symbol``) so X renders the
     price context next to the hook — the configuration that has historically
@@ -423,7 +403,6 @@ def compose_insider_alert_thread(signal: InsiderSignal) -> List[Dict[str, Any]]:
 
     tweet1 = _trim(_tweet1_hook(signal))
     tweet2 = _tweet2_context(signal)
-    tweet3 = _tweet3_framing(signal)
 
     return [
         {
@@ -433,11 +412,6 @@ def compose_insider_alert_thread(signal: InsiderSignal) -> List[Dict[str, Any]]:
         },
         {
             "text": tweet2,
-            "media_symbol": None,
-            "media_trade_date": None,
-        },
-        {
-            "text": tweet3,
             "media_symbol": None,
             "media_trade_date": None,
         },

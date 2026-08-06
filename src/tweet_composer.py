@@ -1,4 +1,4 @@
-"""Compose 3-tweet engagement threads for high-signal filings."""
+"""Compose 2-tweet engagement threads for high-signal filings."""
 
 from __future__ import annotations
 
@@ -243,7 +243,7 @@ def compose_thread(
     context: Dict[str, Any],
     stats: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Build a 3-tweet thread: hook+action (tweet 1), context+question (tweet 2), history+stats (tweet 3)."""
+    """Build a 2-tweet thread: hook+action (tweet 1), context+question (tweet 2)."""
 
     trades = filter_postable_trades(_extract_trades(filing))
     if not trades:
@@ -300,21 +300,6 @@ def compose_thread(
     else:
         tweet2 = _trim(tweet2_base)
 
-    # Tweet 3: Historical context + closing framing
-    historical = str(context.get("combinedSummary") or "")
-    if last_outcome and not historical:
-        historical = last_outcome
-    tail_options = [
-        "History helps frame it, not predict it.",
-        "Use this as context, not certainty.",
-        "Useful edge maybe, guaranteed edge never.",
-    ]
-    chart_note = f"Chart watch on {symbol or 'the lead ticker'}: {len(trades)} trade{'s' if len(trades) != 1 else ''} in filing."
-    tweet3_candidate = f"{historical} {chart_note} {tail_options[mode]}"
-    if len(" ".join(tweet3_candidate.split())) > MAX_TWEET_LEN:
-        tweet3_candidate = f"{historical} {tail_options[mode]}"
-    tweet3 = _trim(tweet3_candidate)
-
     media_date = str(trades[0].get("transactionDate") or trades[0].get("transaction_date") or "") if trades else None
 
     thread = [
@@ -326,8 +311,6 @@ def compose_thread(
     ]
     if interpretation and validate_social_copy(tweet2):
         thread.append({"text": tweet2, "media_symbol": None, "media_trade_date": None})
-    if (historical or last_outcome) and validate_social_copy(tweet3):
-        thread.append({"text": tweet3, "media_symbol": None, "media_trade_date": None})
     return thread
 
 

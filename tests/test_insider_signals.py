@@ -118,10 +118,9 @@ def test_compose_cluster_thread_includes_cashtag_and_chart():
     signal = insider_signals.detect_insider_signals(trades)[0]
     thread = insider_signals.compose_insider_alert_thread(signal)
 
-    assert len(thread) == 3
+    assert len(thread) == 2
     assert thread[0]["media_symbol"] == "ACME"  # root carries chart
     assert thread[1]["media_symbol"] is None
-    assert thread[2]["media_symbol"] is None
 
     root_text = thread[0]["text"]
     assert "$ACME" in root_text
@@ -159,7 +158,7 @@ def test_every_insider_signal_type_composes_valid_social_copy():
     for trades in signal_inputs:
         signal = insider_signals.detect_insider_signals(trades)[0]
         thread = insider_signals.compose_insider_alert_thread(signal)
-        assert len(thread) == 3
+        assert len(thread) == 2
         assert all(validate_social_copy(tweet["text"]) for tweet in thread), signal.sub_type
 
 
