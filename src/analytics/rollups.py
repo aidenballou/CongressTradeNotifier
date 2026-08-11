@@ -210,11 +210,11 @@ def build_seven_day_theme(now_et: datetime) -> Dict[str, Any]:
 
     # Cluster tickers (2+ members)
     cluster_tickers = [
-        {"ticker": ticker, "member_count": len(members)}
+        {"ticker": ticker, "member_count": len(members), "value": ticker_values[ticker]}
         for ticker, members in ticker_members.items()
         if len(members) >= 2
     ]
-    cluster_tickers.sort(key=lambda x: x["member_count"], reverse=True)
+    cluster_tickers.sort(key=lambda x: (x["member_count"], x["value"]), reverse=True)
     ticker_member_counts = {ticker: len(members) for ticker, members in ticker_members.items()}
     top_buyer = max(buyer_members.items(), key=lambda x: x[1]) if buyer_members else None
     top_seller = max(seller_members.items(), key=lambda x: x[1]) if seller_members else None

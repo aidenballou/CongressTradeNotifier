@@ -368,7 +368,11 @@ def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
 def compose_seven_day_theme_thread(theme: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Compose a single strong weekly/pattern post when a real cluster exists."""
 
-    top_5 = theme.get("top_5_tickers_by_value", [])
+    top_5 = [
+        item
+        for item in theme.get("top_5_tickers_by_value", [])
+        if item.get("ticker") and float(item.get("value") or 0) > 0
+    ]
     clusters = theme.get("cluster_tickers", [])
 
     if not top_5:
@@ -377,13 +381,15 @@ def compose_seven_day_theme_thread(theme: Dict[str, Any]) -> List[Dict[str, Any]
 
     top_cluster = theme.get("top_cluster") or (clusters[0] if clusters else None)
     buyer = theme.get("top_buyer_member") or "not concentrated in one member"
-    if top_cluster:
-        cluster_ticker = _ticker_text(top_cluster.get("ticker"))
-        member_count = top_cluster.get("member_count", 0)
+    cluster_value = float((top_cluster or {}).get("value") or 0)
+    if top_cluster and cluster_value <= 0:
         cluster_value = next(
             (float(item.get("value") or 0) for item in top_5 if item.get("ticker") == top_cluster.get("ticker")),
             0.0,
         )
+    if top_cluster and cluster_value > 0:
+        cluster_ticker = _ticker_text(top_cluster.get("ticker"))
+        member_count = top_cluster.get("member_count", 0)
         next_names = ", ".join(
             f"{item['ticker']} ({_format_amount(float(item.get('value') or 0))})"
             for item in top_5
@@ -395,6 +401,7 @@ def compose_seven_day_theme_thread(theme: Dict[str, Any]) -> List[Dict[str, Any]
             f"{f'Next by disclosed value: {next_names}. ' if next_names else ''}"
             f"Biggest reported buyer: {buyer}."
         )
+        media_symbol = top_cluster.get("ticker")
     else:
         leader = top_5[0]
         ticker = _ticker_text(leader.get("ticker"))
@@ -408,8 +415,9 @@ def compose_seven_day_theme_thread(theme: Dict[str, Any]) -> List[Dict[str, Any]
             f"{f'Next by disclosed value: {next_names}. ' if next_names else ''}"
             f"Biggest reported buyer: {buyer}."
         )
+        media_symbol = leader.get("ticker")
 
-    return [{"text": tweet1, "media_symbol": top_5[0]["ticker"] if top_5 else None, "media_trade_date": None}]
+    return [{"text": tweet1, "media_symbol": media_symbol, "media_trade_date": None}]
 
 
 def compose_member_spotlight_thread(spotlight: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -132,8 +132,8 @@ def test_seven_day_theme_root_avoids_dashboard_label():
             {"ticker": "MSFT", "value": 50000.0},
             {"ticker": "AAPL", "value": 30000.0},
         ],
-        "cluster_tickers": [{"ticker": "NVDA", "member_count": 3}],
-        "top_cluster": {"ticker": "NVDA", "member_count": 3},
+        "cluster_tickers": [{"ticker": "NVDA", "member_count": 3, "value": 125000.0}],
+        "top_cluster": {"ticker": "NVDA", "member_count": 3, "value": 125000.0},
         "top_buyer_member": "Jade Stone",
     }
 
@@ -145,7 +145,44 @@ def test_seven_day_theme_root_avoids_dashboard_label():
     assert "$125K" in thread[0]["text"]
     assert "MSFT ($50K), AAPL ($30K)" in thread[0]["text"]
     assert "$MSFT" not in thread[0]["text"]
+    assert thread[0]["media_symbol"] == "NVDA"
     assert len(thread[0]["text"]) <= 280
+
+
+def test_seven_day_theme_uses_cluster_value_outside_top_five():
+    theme = {
+        "top_5_tickers_by_value": [
+            {"ticker": "FWONK", "value": 113503.0},
+            {"ticker": "CHRW", "value": 97003.0},
+            {"ticker": "AAPL", "value": 83001.0},
+            {"ticker": "BWXT", "value": 48502.0},
+            {"ticker": "MSFT", "value": 40501.0},
+        ],
+        "top_cluster": {"ticker": "KR", "member_count": 2, "value": 16001.0},
+        "top_buyer_member": "April Delaney",
+    }
+
+    thread = compose_seven_day_theme_thread(theme)
+
+    assert "Congress clustered around $KR" in thread[0]["text"]
+    assert "about $16K in trades" in thread[0]["text"]
+    assert "$0" not in thread[0]["text"]
+    assert thread[0]["media_symbol"] == "KR"
+
+
+def test_seven_day_theme_does_not_lead_with_zero_value_cluster():
+    theme = {
+        "top_5_tickers_by_value": [{"ticker": "FWONK", "value": 113503.0}],
+        "top_cluster": {"ticker": "KR", "member_count": 2, "value": 0.0},
+        "top_buyer_member": "April Delaney",
+    }
+
+    thread = compose_seven_day_theme_thread(theme)
+
+    assert thread[0]["text"].startswith("$FWONK led congressional trading")
+    assert "$KR" not in thread[0]["text"]
+    assert "$0" not in thread[0]["text"]
+    assert thread[0]["media_symbol"] == "FWONK"
 
 
 def test_member_spotlight_does_not_emit_context_reply():
