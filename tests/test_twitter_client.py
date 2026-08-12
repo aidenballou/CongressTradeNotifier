@@ -302,6 +302,43 @@ class TestTwitterClient:
         assert symbol == 'BBB'
         assert trade_date == '2025-08-21'
 
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_build_chart_uses_dark_split_brief_dimensions(self, mock_client):
+        """Render the social chart at an exact 16:9 size."""
+        import os
+        import struct
+        from datetime import datetime, timedelta
+
+        client = TwitterClient()
+        start = datetime(2026, 5, 11)
+        closes = [458.0, 430.0, 510.0, 458.0, 540.0, 500.0, 465.77]
+        series = [(start + timedelta(days=index * 15), close) for index, close in enumerate(closes)]
+        image_path = None
+
+        with patch.object(client, '_fetch_historical_prices', return_value=series), patch.object(
+            client,
+            '_get_close_on_or_after',
+            return_value=(458.0, datetime(2026, 6, 10)),
+        ):
+            image_path = client._build_chart_for_symbol('AMD', '2026-06-10')
+
+        try:
+            assert image_path is not None
+            with open(image_path, 'rb') as image_file:
+                assert image_file.read(8) == b'\x89PNG\r\n\x1a\n'
+                image_file.read(8)
+                width, height = struct.unpack('>II', image_file.read(8))
+            assert (width, height) == (1600, 900)
+        finally:
+            if image_path:
+                os.unlink(image_path)
+
     @patch('src.twitter_client.TwitterClient')
     def test_post_trades_to_twitter_aggregates(self, mock_client_cls):
         """Ensure trades are aggregated by member before tweeting."""

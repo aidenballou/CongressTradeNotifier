@@ -19,15 +19,12 @@ except ImportError:  # pragma: no cover
 
 # Lazy import for plotting to avoid heavy import when disabled
 try:
-    import numpy as np  # type: ignore
     import matplotlib  # type: ignore
     matplotlib.use("Agg")  # headless-safe backend for CI and servers
     import matplotlib.pyplot as plt  # type: ignore
     import matplotlib.dates as mdates  # type: ignore
     from matplotlib.ticker import MaxNLocator, FuncFormatter  # type: ignore
     from matplotlib import rcParams  # type: ignore
-    import matplotlib.patheffects as pe  # type: ignore
-    from matplotlib.colors import LinearSegmentedColormap  # type: ignore
     from cycler import cycler
 
     # Professional font + palette defaults
@@ -52,7 +49,6 @@ try:
     rcParams["axes.titlecolor"] = "#111827"
 except Exception:  # pragma: no cover - plot is optional
     plt = None
-    np = None
 
 # Load environment variables
 load_dotenv()
@@ -913,19 +909,6 @@ class TwitterClient:
     # -------------------------
     # Chart & Price utilities
     # -------------------------
-    def _ema(self, values: List[float], span: int) -> List[float]:
-        """Compute an Exponential Moving Average for a sequence of floats.
-        Returns a list of the same length as values.
-        """
-        if not values or span <= 1:
-            return list(values)
-        alpha = 2.0 / (span + 1.0)
-        ema_values: List[float] = []
-        ema_prev = float(values[0])
-        for v in values:
-            ema_prev = (alpha * float(v)) + ((1.0 - alpha) * ema_prev)
-            ema_values.append(ema_prev)
-        return ema_values
     def _fetch_historical_prices(self, symbol: str, days: int = 60) -> List[Tuple[datetime, float]]:
         """Fetch recent prices from FMP with robust fallbacks. Returns list of (date, close)."""
         api_key = os.getenv("FMP_API_KEY")
@@ -1080,7 +1063,7 @@ class TwitterClient:
         return []
 
     def _build_chart_for_symbol(self, symbol: str, transaction_date: Optional[str] = None) -> Optional[str]:
-        """Generate a professional, clean PNG line chart and optionally mark the transaction date."""
+        """Generate a dark split-layout price chart and mark the transaction date."""
         if plt is None:
             return None
         series = self._fetch_historical_prices(symbol, days=90)
@@ -1117,352 +1100,249 @@ class TwitterClient:
             change_abs = latest_price - entry_price
             change_pct = (change_abs / entry_price) * 100.0
 
-        # --- Styling choices ---
-        primary = "#1D4ED8"       # modern blue
-        accent = "#EF4444"        # trade marker
-        ema_color = "#60A5FA"     # softer overlay
-        positive_color = "#059669"
-        grid_color = "#CBD5F5"
+        # Dark split-brief palette.
+        background = "#08111F"
+        text_primary = "#F4F7FB"
+        text_muted = "#8795AC"
+        grid_color = "#1F3854"
+        pre_trade_color = "#526C91"
+        post_trade_color = "#5DA9FF"
+        positive_color = "#3DD6A3"
+        negative_color = "#FF6B6B"
+        trade_color = "#F5B942"
 
-        # Create plot (slightly wider, high DPI)
-        fig, ax = plt.subplots(figsize=(7.8, 4.3), dpi=320)
-        fig.patch.set_facecolor("#FFFFFF")
-        ax.set_facecolor("#F8FAFF")
-        ax.set_axisbelow(True)
-
-        # Soft gradient background for depth
-        if np is not None:
-            try:
-                gradient = np.linspace(0, 1, 512)
-                gradient = np.vstack((gradient, gradient))
-                gradient_cmap = LinearSegmentedColormap.from_list("chart_bg", ["#FFFFFF", "#EEF2FF"])
-                ax.imshow(
-                    gradient,
-                    extent=[
-                        mdates.date2num(dates[0]),
-                        mdates.date2num(dates[-1]),
-                        ymin - pad * 8,
-                        ymax + pad * 8,
-                    ],
-                    aspect="auto",
-                    cmap=gradient_cmap,
-                    alpha=0.9,
-                    zorder=0,
-                )
-            except Exception:
-                pass
-
-        # Price line with soft shadow and rounded caps
-        line_main, = ax.plot(
-            dates,
-            closes,
-            color=primary,
-            linewidth=2.8,
-            solid_joinstyle="round",
-            solid_capstyle="round",
-            zorder=3,
+        fig, (summary_ax, ax) = plt.subplots(
+            1,
+            2,
+            figsize=(8, 4.5),
+            dpi=200,
+            gridspec_kw={"width_ratios": [3, 7]},
         )
-        line_main.set_path_effects([
-            pe.SimpleLineShadow(offset=(0, -1.2), alpha=0.25, linewidth=3.6),
-            pe.Normal(),
-        ])
+        fig.patch.set_facecolor(background)
+        summary_ax.set_facecolor(background)
+        ax.set_facecolor(background)
+        fig.subplots_adjust(left=0.045, right=0.92, top=0.86, bottom=0.17, wspace=0.14)
 
-        # Emphasize gain/loss relative to entry
-        baseline = np.full(len(closes), entry_price) if np is not None else [entry_price] * len(closes)
-        if np is not None:
-            closes_array = np.array(closes)
-            ax.fill_between(
-                dates,
-                closes,
-                baseline,
-                where=closes_array >= entry_price,
-                color=primary,
-                alpha=0.08,
-                zorder=1,
-            )
-            ax.fill_between(
-                dates,
-                closes,
-                baseline,
-                where=closes_array < entry_price,
-                color=accent,
-                alpha=0.05,
-                zorder=1,
-            )
-        else:
-            ax.fill_between(dates, closes, baseline, color=primary, alpha=0.08, zorder=1)
-
-        # Optional 10-day EMA overlay for texture
-        if len(closes) >= 10:
-            ema_vals = self._ema(closes, 10)
-            ax.plot(
-                dates,
-                ema_vals,
-                color=ema_color,
-                linewidth=1.6,
-                alpha=0.95,
-                linestyle="-.",
-                zorder=2,
-            )
-
-        # Title & time window metadata (figure-level to leave room for badges)
-        window_label = f"{dates[0].strftime('%b %d')} – {dates[-1].strftime('%b %d, %Y')}"
-        fig.text(
-            0.03,
-            0.985,
+        # Left narrative column.
+        summary_ax.axis("off")
+        summary_ax.text(
+            0,
+            1,
             f"${symbol}",
+            transform=summary_ax.transAxes,
             ha="left",
             va="top",
-            fontsize=15,
-            fontweight="semibold",
-            color="#0F172A",
+            fontsize=25,
+            fontweight="bold",
+            color=text_primary,
         )
-        fig.text(
-            0.03,
-            0.94,
-            window_label,
-            ha="left",
-            va="top",
-            fontsize=10.5,
-            color="#4B5563",
-        )
-        ax.set_xlabel("")
-        ax.set_ylabel("Price ($)", fontsize=10, color="#1F2937")
 
-        # Clean spines and lightweight grid on Y only
-        for spine in ["top", "right"]:
-            ax.spines[spine].set_visible(False)
-        ax.spines["left"].set_alpha(0.35)
-        ax.spines["bottom"].set_alpha(0.35)
-        ax.grid(True, which="major", axis="y", linestyle=(0, (5, 6)), color=grid_color, alpha=0.55)
-        ax.grid(False, axis="x")
-
-        # Nice y-lims with padding
-        ax.set_ylim(ymin - pad, ymax + pad)
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
-
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:,.2f}" if abs(v) < 100 else f"${v:,.0f}"))
-
-        # Date formatting: month + day only, limited ticks to avoid overlap
-        locator = mdates.AutoDateLocator(minticks=4, maxticks=6)
-        formatter = mdates.DateFormatter("%b %d")  # e.g., Aug 01
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(formatter)
-        ax.tick_params(axis="x", labelsize=10, pad=4, length=0)
-        ax.tick_params(axis="y", labelsize=10, pad=6, length=0)
-        ax.margins(x=0)
-
-        # Secondary Y axis: % change vs base (entry price if available, else first close)
-        pct_base = entry_price if entry_price and entry_price > 0 else closes[0]
-        if pct_base and pct_base > 0:
-            pct_min = (ax.get_ylim()[0] - pct_base) / pct_base * 100.0
-            pct_max = (ax.get_ylim()[1] - pct_base) / pct_base * 100.0
-            ax_pct = ax.twinx()
-            ax_pct.set_ylim(pct_min, pct_max)
-            ax_pct.tick_params(axis="y", labelsize=9, colors="#6B7280", length=0, pad=5)
-            ax_pct.spines["top"].set_visible(False)
-            ax_pct.spines["right"].set_alpha(0.25)
-            ax_pct.grid(False)
-            ax_pct.set_ylabel("% change", fontsize=9, color="#6B7280")
-
-            def _pct_fmt(v, _pos):
-                sign = "+" if v >= 0 else ""
-                return f"{sign}{v:.0f}%"
-
-            ax_pct.yaxis.set_major_formatter(FuncFormatter(_pct_fmt))
-
-        # Build metadata badges to be drawn in figure space after layout so they never overlap the chart
-        top_badges: List[Dict] = []
         if change_pct is not None:
-            perf_sign = "+" if change_pct >= 0 else ""
-            perf_color = positive_color if change_pct >= 0 else accent
+            performance_color = positive_color if change_pct >= 0 else negative_color
+            performance_text = f"{'+' if change_pct >= 0 else ''}{change_pct:.1f}%"
             if change_abs is not None:
                 dollar_sign = "+" if change_abs >= 0 else "-"
                 if abs(change_abs) < 0.005:
                     dollar_sign = ""
-                dollar_change = f"{dollar_sign}${abs(change_abs):.2f}" if dollar_sign else "$0.00"
-                perf_text = f"{perf_sign}{change_pct:.1f}% ({dollar_change})"
+                dollar_text = f"{dollar_sign}${abs(change_abs):.2f}" if dollar_sign else "$0.00"
             else:
-                perf_text = f"{perf_sign}{change_pct:.1f}%"
-            reference_label = (
-                f"since {entry_date_label}" if transaction_date else f"from first close on {entry_date_label}"
-            )
-            top_badges.append(
-                {
-                    "text": perf_text,
-                    "fontsize": 12,
-                    "fontweight": "semibold",
-                    "color": perf_color,
-                    "facecolor": "#F0FDF4" if change_pct >= 0 else "#FEF2F2",
-                    "edgecolor": "none",
-                    "spacing": 0.055,
-                }
-            )
-            top_badges.append(
-                {
-                    "text": reference_label,
-                    "fontsize": 9.5,
-                    "color": "#6B7280",
-                    "facecolor": "#FFFFFF",
-                    "edgecolor": "#E5E7EB",
-                    "spacing": 0.05,
-                }
-            )
+                dollar_text = ""
+        else:
+            performance_color = text_primary
+            performance_text = "—"
+            dollar_text = ""
 
-        top_badges.append(
-            {
-                "text": f"Last ${latest_price:.2f}",
-                "fontsize": 11,
-                "fontweight": "medium",
-                "color": "#111827",
-                "facecolor": "#E0F2FE",
-                "edgecolor": "#7DD3FC",
-                "align": "right",
-                "spacing": 0.06,
-            }
+        reference_text = (
+            f"SINCE {entry_date_label.upper()}"
+            if transaction_date
+            else f"FROM {entry_date_label.upper()}"
+        )
+        summary_ax.text(
+            0,
+            0.76,
+            performance_text,
+            transform=summary_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=40,
+            fontweight="bold",
+            color=performance_color,
+        )
+        summary_ax.text(
+            0,
+            0.52,
+            dollar_text,
+            transform=summary_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=21,
+            fontweight="semibold",
+            color=performance_color,
+        )
+        summary_ax.text(
+            0,
+            0.41,
+            reference_text,
+            transform=summary_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8.5,
+            fontweight="medium",
+            color=text_muted,
+        )
+        summary_ax.plot(
+            [0, 0.88],
+            [0.32, 0.32],
+            transform=summary_ax.transAxes,
+            color=grid_color,
+            linewidth=0.8,
+        )
+        summary_ax.text(
+            0,
+            0.25,
+            "LAST PRICE",
+            transform=summary_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            fontweight="medium",
+            color=text_muted,
+        )
+        summary_ax.text(
+            0,
+            0.15,
+            f"${latest_price:,.2f}",
+            transform=summary_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=27,
+            fontweight="bold",
+            color=text_primary,
         )
 
-        bottom_caption = f"Data through {dates[-1].strftime('%b %d, %Y')} • Source: Financial Modeling Prep"
+        # Right chart: muted history transitions to the active post-trade line.
+        transaction_dt: Optional[datetime] = None
+        split_index: Optional[int] = None
+        if transaction_date:
+            try:
+                transaction_dt = datetime.strptime(transaction_date, "%Y-%m-%d")
+                split_index = next((i for i, date in enumerate(dates) if date >= transaction_dt), None)
+                if split_index is not None and not (dates[0] <= transaction_dt <= dates[-1]):
+                    split_index = None
+            except ValueError:
+                transaction_dt = None
 
-        # Mark transaction date if within range
-        try:
-            if transaction_date:
-                tx = datetime.strptime(transaction_date, "%Y-%m-%d")
-                if dates[0] <= tx <= dates[-1]:
-                    tx_price = entry_price if entry_price else closes[0]
-                    ax.axvline(tx, color=accent, linestyle=(0, (5, 6)), linewidth=1.4, alpha=0.75)
-                    if tx_price:
-                        ax.scatter(
-                            [tx],
-                            [tx_price],
-                            s=64,
-                            color=accent,
-                            edgecolors="#FFFFFF",
-                            linewidth=1.1,
-                            zorder=5,
-                        )
-                    tx_numeric = mdates.date2num(tx)
-                    x_mid = (mdates.date2num(dates[-1]) + mdates.date2num(dates[0])) / 2
-                    offset_x = 12 if tx_numeric <= x_mid else -12
-                    offset_y = -18
-                    # If the trade happens very close to the latest price marker, push the label upward
-                    if abs(tx_numeric - mdates.date2num(dates[-1])) <= 1.5:
-                        offset_y = 18
-                    ax.annotate(
-                        "Trade",
-                        xy=(tx, tx_price),
-                        xytext=(offset_x, offset_y),
-                        textcoords="offset points",
-                        fontsize=9,
-                        color="#FFFFFF",
-                        fontweight="medium",
-                        ha="left" if offset_x > 0 else "right",
-                        bbox=dict(boxstyle="round,pad=0.3", fc=accent, ec="none", alpha=0.92),
-                        arrowprops=dict(arrowstyle="->", color=accent, lw=0.8, alpha=0.7),
-                        zorder=7,
-                    )
-        except Exception:
-            pass
+        line_style = {
+            "linewidth": 2.0,
+            "solid_joinstyle": "round",
+            "solid_capstyle": "round",
+            "zorder": 3,
+        }
+        if split_index is None:
+            ax.plot(dates, closes, color=post_trade_color, **line_style)
+        else:
+            if split_index > 0:
+                ax.plot(
+                    dates[: split_index + 1],
+                    closes[: split_index + 1],
+                    color=pre_trade_color,
+                    **line_style,
+                )
+            ax.plot(
+                dates[split_index:],
+                closes[split_index:],
+                color=post_trade_color,
+                **line_style,
+            )
 
-        # Label last price bubble (card should sit above secondary axis)
-        last_x, last_y = dates[-1], closes[-1]
+            trade_plot_date = dates[split_index]
+            trade_plot_price = closes[split_index]
+            ax.axvline(trade_plot_date, color=trade_color, linewidth=0.9, alpha=0.9, zorder=1)
+            ax.scatter(
+                [trade_plot_date],
+                [trade_plot_price],
+                s=50,
+                color=trade_color,
+                edgecolors=background,
+                linewidth=1.2,
+                zorder=5,
+            )
+            ax.text(
+                trade_plot_date,
+                1.035,
+                f"TRADE · {transaction_dt.strftime('%b %d').upper()}",
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="bottom",
+                fontsize=8.5,
+                fontweight="semibold",
+                color=trade_color,
+                clip_on=False,
+            )
+
         ax.scatter(
-            [last_x],
-            [last_y],
-            s=72,
-            color=primary,
-            edgecolors="#FFFFFF",
-            linewidth=1.0,
+            [dates[-1]],
+            [latest_price],
+            s=42,
+            color=post_trade_color,
+            edgecolors=background,
+            linewidth=1.1,
             zorder=5,
         )
-        try:
-            last_label = ax.annotate(
-                f"${last_y:.2f}",
-                xy=(last_x, last_y),
-                xytext=(-16, 18),
-                textcoords="offset points",
-                fontsize=10.5,
-                color="#0F172A",
-                ha="right",
-                va="bottom",
-                bbox=dict(
-                    boxstyle="round,pad=0.4",
-                    fc="#FFFFFF",
-                    ec="#93C5FD",
-                    lw=1.0,
-                    alpha=1.0,
-                ),
-                zorder=8,
-            )
-            last_label.set_path_effects([
-                pe.withStroke(linewidth=3, foreground="#FFFFFF"),
-                pe.SimplePatchShadow(offset=(0, -1), shadow_rgbFace="#93C5FD", alpha=0.4),
-            ])
-            last_label.set_clip_on(False)
-        except Exception:
-            pass
 
-        fig.tight_layout(rect=(0, 0.03, 1, 0.88))
-
-        # Draw metadata badges after layout to guarantee they do not collide with chart elements
-        y_cursor_left = 0.9
-        y_cursor_right = 0.9
-        for badge in top_badges:
-            align = badge.get("align", "left")
-            x_pos = 0.03 if align == "left" else 0.97
-            y_cursor = y_cursor_left if align == "left" else y_cursor_right
-            fig.text(
-                x_pos,
-                y_cursor,
-                badge["text"],
-                ha=align,
-                va="top",
-                fontsize=badge.get("fontsize", 10),
-                fontweight=badge.get("fontweight"),
-                color=badge.get("color", "#111827"),
-                bbox=dict(
-                    boxstyle="round,pad=0.35",
-                    facecolor=badge.get("facecolor", "#FFFFFF"),
-                    edgecolor=badge.get("edgecolor", "none"),
-                    linewidth=0.8,
-                ),
-                zorder=10,
-            )
-            if align == "left":
-                y_cursor_left -= badge.get("spacing", 0.05)
-            else:
-                y_cursor_right -= badge.get("spacing", 0.05)
-
-        fig.text(
-            0.03,
-            0.03,
-            bottom_caption,
-            ha="left",
-            va="bottom",
-            fontsize=8.5,
-            color="#6B7280",
+        ax.set_ylim(ymin - pad, ymax + pad)
+        ax.margins(x=0.015)
+        ax.set_axisbelow(True)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _: f"${value:,.2f}" if abs(value) < 100 else f"${value:,.0f}")
         )
+        ax.yaxis.tick_right()
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=5))
+        ax.xaxis.set_major_formatter(
+            FuncFormatter(lambda value, _: mdates.num2date(value).strftime("%b %d").upper())
+        )
+        ax.tick_params(axis="x", colors=text_muted, labelsize=8.5, pad=9, length=0)
+        ax.tick_params(axis="y", colors=text_muted, labelsize=8.5, pad=9, length=0)
+        ax.grid(True, which="major", axis="y", color=grid_color, linewidth=0.7, linestyle=(0, (2, 3)))
+        ax.grid(False, axis="x")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
-        # Subtle watermark
-        try:
-            fig.text(
-                0.97,
-                0.03,
-                "@theinsidescope",
-                ha="right",
-                va="bottom",
-                fontsize=9,
-                color="#6B7280",
-                alpha=0.65,
+        # Quiet footer keeps provenance visible without competing with the data.
+        fig.lines.append(
+            plt.Line2D(
+                [0.045, 0.965],
+                [0.105, 0.105],
+                transform=fig.transFigure,
+                color=grid_color,
+                linewidth=0.8,
             )
-        except Exception:
-            pass
+        )
+        fig.text(
+            0.045,
+            0.055,
+            f"Data through {dates[-1].strftime('%b %d, %Y')} · Market data: FMP / Yahoo Finance fallback",
+            ha="left",
+            va="center",
+            fontsize=7.5,
+            color=text_muted,
+        )
+        fig.text(
+            0.965,
+            0.055,
+            "@theinsidescope",
+            ha="right",
+            va="center",
+            fontsize=7.5,
+            color=text_muted,
+        )
 
         # Save to temp file
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{symbol}.png")
         image_path = tmp.name
         tmp.close()
-        fig.savefig(image_path, bbox_inches="tight")
+        fig.savefig(image_path, facecolor=background)
         plt.close(fig)
         return image_path
 
