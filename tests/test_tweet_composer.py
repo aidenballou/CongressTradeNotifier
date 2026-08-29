@@ -54,7 +54,56 @@ def test_compose_thread_shape_and_limits():
     assert thread[0]["media_symbol"] == "NVDA"
     assert "$NVDA" in thread[0]["text"]
     assert "$75K" in thread[0]["text"]
-    assert "reported a BUY" in thread[0]["text"]
+    assert thread[0]["text"] == (
+        "🚨 BREAKING: Congress member Jade Stone just disclosed buying about $75K of $NVDA."
+    )
+    assert thread[1]["text"] == "Trade date: Jan 8, 2026. Filed 2 days later."
+
+
+def test_compose_thread_lists_multiple_trades_for_one_member():
+    filing, signal, insight, context, stats = _sample()
+    filing["trades"].append(
+        {
+            "firstName": "Jade",
+            "lastName": "Stone",
+            "symbol": "MSFT",
+            "type": "Sale",
+            "amount": "$15,001 - $50,000",
+            "transactionDate": "2026-01-09",
+        }
+    )
+
+    thread = compose_thread(filing, signal, insight, context, stats)
+
+    assert thread[0]["text"] == (
+        "🚨 BREAKING: Congress member Jade Stone just disclosed 2 trades:\n"
+        "• Bought about $75K of $NVDA\n"
+        "• Sold $15K-$50K of MSFT"
+    )
+    assert thread[1]["text"] == "Disclosure timing: Trades made Jan 8-Jan 9; filed 1-2 days later."
+    assert all(len(tweet["text"]) <= 280 for tweet in thread)
+
+
+def test_compose_thread_keeps_every_trade_when_list_needs_multiple_posts():
+    filing, signal, insight, context, stats = _sample()
+    filing["trades"] = [
+        {
+            "firstName": "Jade",
+            "lastName": "Stone",
+            "symbol": f"TICK{index}",
+            "type": "Purchase" if index % 2 else "Sale",
+            "amount": "$15,001 - $50,000",
+            "transactionDate": "2026-01-08",
+        }
+        for index in range(12)
+    ]
+
+    thread = compose_thread(filing, signal, insight, context, stats)
+    combined = "\n".join(tweet["text"] for tweet in thread)
+
+    assert len(thread) > 1
+    assert all(len(tweet["text"]) <= 280 for tweet in thread)
+    assert all(f"TICK{index}" in combined for index in range(12))
 
 
 def test_compose_thread_varies_structure():
@@ -101,7 +150,7 @@ print(thread[0]["text"])
     assert out1 == out2
 
 
-def test_daily_tape_root_avoids_dashboard_label_and_formats_ticker():
+def test_daily_tape_uses_breaking_member_alert_instead_of_aggregate_copy():
     tape = {
         "total_filings": 2,
         "largest_trade": {
@@ -118,10 +167,11 @@ def test_daily_tape_root_avoids_dashboard_label_and_formats_ticker():
 
     thread = compose_daily_tape_thread(tape)
 
-    assert len(thread) == 1
-    assert not thread[0]["text"].startswith("Daily Tape:")
-    assert "$NVDA" in thread[0]["text"]
-    assert "$75K" in thread[0]["text"]
+    assert len(thread) == 2
+    assert thread[0]["text"] == (
+        "🚨 BREAKING: Congress member Jade Stone just disclosed buying about $75K of $NVDA."
+    )
+    assert thread[1]["text"] == "Trade date: Jan 8, 2026. Filed 2 days later."
     assert len(thread[0]["text"]) <= 280
 
 
@@ -185,7 +235,7 @@ def test_seven_day_theme_does_not_lead_with_zero_value_cluster():
     assert thread[0]["media_symbol"] == "FWONK"
 
 
-def test_member_spotlight_does_not_emit_context_reply():
+def test_member_spotlight_uses_breaking_alert_with_factual_timing_reply():
     spotlight = {
         "member": "Jade Stone",
         "ticker": "MSFT",
@@ -198,11 +248,13 @@ def test_member_spotlight_does_not_emit_context_reply():
 
     thread = compose_member_spotlight_thread(spotlight)
 
-    assert len(thread) == 1
+    assert len(thread) == 2
     assert not thread[0]["text"].startswith("Member Spotlight:")
     assert all(not tweet["text"].startswith("Context:") for tweet in thread)
+    assert thread[0]["text"].startswith("🚨 BREAKING: Congress member Jade Stone")
     assert "$MSFT" in thread[0]["text"]
     assert "$55K" in thread[0]["text"]
+    assert thread[1]["text"] == "Trade date: Jan 8, 2026. Filed 3 days later."
     assert len(thread[0]["text"]) <= 280
 
 

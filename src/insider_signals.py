@@ -280,38 +280,10 @@ def find_top_insider_signal(
 # ---------------------------------------------------------------------------
 
 
-def _window_phrase(signal: InsiderSignal) -> str:
-    """Natural-language description of how recent the buying is."""
-
-    if not signal.earliest_date or not signal.latest_date:
-        return "recently"
-    delta_days = max(0, (signal.latest_date - signal.earliest_date).days)
-    if delta_days <= 1:
-        return "in the last 24h"
-    if delta_days <= 3:
-        return f"in the last {delta_days} days"
-    return f"over the last {delta_days} days"
-
-
 def _hook_cluster(signal: InsiderSignal) -> str:
     insiders = signal.unique_insiders
-    window = _window_phrase(signal)
     amount = _format_amount(signal.total_value)
-    titles = []
-    for trade in signal.trades[:3]:
-        role = _short_title(trade.get("title", ""))
-        if role and role not in titles:
-            titles.append(role)
-    role_blurb = ""
-    if titles:
-        if len(titles) == 1:
-            role_blurb = f" ({titles[0]})"
-        else:
-            role_blurb = f" (incl. {', '.join(titles[:2])})"
-    return (
-        f"🚨 ${signal.ticker}: {insiders} insiders{role_blurb} just bought "
-        f"{amount} combined on the open market {window}."
-    )
+    return f"🚨 BREAKING: {insiders} insiders at ${signal.ticker} just disclosed {amount} in stock purchases."
 
 
 def _hook_csuite(signal: InsiderSignal) -> str:
@@ -319,10 +291,9 @@ def _hook_csuite(signal: InsiderSignal) -> str:
     role = _short_title(trade.get("title", ""))
     name = _proper_name(trade.get("insider_name", ""))
     amount = _format_amount(trade.get("value") or signal.total_value)
-    return (
-        f"🟢 ${signal.ticker}: {role} {name} just bought {amount} "
-        f"of stock on the open market."
-    )
+    company = str(trade.get("company_name") or "").strip()
+    actor = f"{company} {role} {name}" if company else f"${signal.ticker} {role} {name}"
+    return f"🚨 BREAKING: {actor} just disclosed a {amount} stock purchase."
 
 
 def _hook_unusual_size(signal: InsiderSignal) -> str:
@@ -330,10 +301,9 @@ def _hook_unusual_size(signal: InsiderSignal) -> str:
     role = _short_title(trade.get("title", ""))
     name = _proper_name(trade.get("insider_name", ""))
     amount = _format_amount(trade.get("value") or signal.total_value)
-    return (
-        f"📈 Unusual size on ${signal.ticker}: {name} ({role}) "
-        f"bought {amount} in the open market."
-    )
+    company = str(trade.get("company_name") or "").strip()
+    actor = f"{company} {role} {name}" if company else f"${signal.ticker} {role} {name}"
+    return f"🚨 BREAKING: {actor} just disclosed a {amount} stock purchase."
 
 
 def _tweet1_hook(signal: InsiderSignal) -> str:
@@ -349,41 +319,33 @@ def _tweet2_context(signal: InsiderSignal) -> str:
     shares = float(trade.get("shares") or 0)
     price = float(trade.get("price") or 0)
     trade_date = trade.get("transaction_date")
-    pretty_date = trade_date.strftime("%b %d") if isinstance(trade_date, datetime) else "recently"
+    pretty_date = trade_date.strftime("%b %-d") if isinstance(trade_date, datetime) else "recently"
 
     if signal.sub_type == "CLUSTER_BUY":
-        top_names = [
-            _proper_name(t.get("insider_name", ""))
-            for t in signal.trades[:3]
-            if t.get("insider_name")
-        ]
-        names_blurb = ", ".join(top_names[:2]) if top_names else "multiple insiders"
-        return _trim(
-            f"Buyers include {names_blurb} — and they're spending personal cash, not "
-            f"exercising options. Clustered insider buying has historically skewed "
-            f"bullish. Coincidence, or are they seeing something the tape isn't?"
-        )
+        lines = []
+        for trade in signal.trades[:4]:
+            role = _short_title(trade.get("title", ""))
+            name = _proper_name(trade.get("insider_name", ""))
+            lines.append(f"• {role} {name} bought {_format_amount(trade.get('value') or 0)}")
+        return "\n".join(lines)
 
     if signal.sub_type == "CSUITE_BUY":
         detail = (
-            f"{shares:,.0f} shares at ~${price:,.2f} on {pretty_date}"
+            f"{shares:,.0f} shares at about ${price:,.2f} on {pretty_date}"
             if shares and price
             else f"filed {pretty_date}"
         )
-        return _trim(
-            f"When the top of the org chart puts real money on the line ({detail}), "
-            f"it usually means one thing: they think the stock is worth more than "
-            f"the market is pricing it. Signal, or optics?"
-        )
+        name = _proper_name(trade.get("insider_name", ""))
+        return _trim(f"{name} bought {detail}. The filing identifies it as an open-market purchase.")
 
-    # UNUSUAL_SIZE_BUY
-    detail = (
-        f"{shares:,.0f} shares at ~${price:,.2f}" if shares and price else "size alone is unusual"
-    )
-    return _trim(
-        f"This open-market purchase ({detail}) is materially larger than routine insider "
-        f"activity. Size alone is not a thesis, but it makes follow-through worth tracking."
-    )
+    name = _proper_name(trade.get("insider_name", ""))
+    amount = _format_amount(trade.get("value") or signal.total_value)
+    if shares and price:
+        return _trim(
+            f"{name} bought {shares:,.0f} shares at about ${price:,.2f}. "
+            f"The filing identifies an open-market purchase worth {amount}."
+        )
+    return _trim(f"The filing identifies an open-market purchase by {name} worth {amount}.")
 
 
 def compose_insider_alert_thread(signal: InsiderSignal) -> List[Dict[str, Any]]:

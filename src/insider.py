@@ -129,6 +129,12 @@ def normalize_insider_trade(raw: Mapping[str, Any]) -> Dict[str, Any]:
         or raw.get("position")
         or ""
     ).strip()
+    company_name = str(
+        raw.get("companyName")
+        or raw.get("issuerName")
+        or raw.get("issuer")
+        or ""
+    ).strip()
     transaction_code = str(raw.get("transactionType") or raw.get("type") or "").strip()
     acquisition = str(
         raw.get("acquistionOrDisposition")  # FMP's misspelling
@@ -158,6 +164,7 @@ def normalize_insider_trade(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "symbol": symbol,
         "insider_name": name,
         "title": title,
+        "company_name": company_name,
         "title_lower": title_lower,
         "transaction_code": transaction_code,
         "acquisition_disposition": acquisition,

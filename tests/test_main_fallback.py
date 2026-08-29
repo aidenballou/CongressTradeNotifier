@@ -53,18 +53,15 @@ def test_fallback_tweet_includes_direction_amounts_and_reporting_lag():
     tweet = main_module._format_fallback_root(trades, "2026-07-03")
 
     assert tweet == (
-        "Rep. Gilbert Cisneros disclosed 2 stock sales:\n"
-        "• $RBC — $1K–$15K\n"
-        "• SFTBY — $1K–$15K\n"
-        "Combined disclosed range: $2K–$30K.\n"
-        "Trades made Jun 30; filed 3 days later.\n"
-        "#CongressTrades"
+        "🚨 BREAKING: Congress member Gilbert Cisneros just disclosed 2 trades:\n"
+        "• Sold $1K-$15K of $RBC\n"
+        "• Sold $1K-$15K of SFTBY"
     )
     assert len(tweet) <= 280
-    assert tweet.count("$") == 7  # Six dollar amounts plus one X cashtag.
+    assert tweet.count("$") == 5  # Four dollar amounts plus one X cashtag.
 
 
-def test_fallback_tweet_summarizes_large_batches_with_facts():
+def test_fallback_tweet_uses_requested_multi_trade_format():
     trades = [
         {
             "firstName": "Gilbert",
@@ -86,10 +83,11 @@ def test_fallback_tweet_summarizes_large_batches_with_facts():
 
     tweet = main_module._format_fallback_root(trades, "2026-07-03")
 
-    assert "Rep. Gilbert Cisneros disclosed 4 stock trades: 2 buys, 2 sales." in tweet
-    assert "Largest: bought $LLY — $50K–$100K." in tweet
-    assert "Combined disclosed range: $81K–$215K." in tweet
-    assert "Trades made Jun 10–Jun 30; filed 3–23 days later." in tweet
+    assert tweet.startswith("🚨 BREAKING: Congress member Gilbert Cisneros just disclosed 4 trades:")
+    assert "• Bought $50K-$100K of $LLY" in tweet
+    assert "• Bought $15K-$50K of IBM" in tweet
+    assert "• Sold $15K-$50K of MSFT" in tweet
+    assert "• Sold $1K-$15K of RBC" in tweet
     assert len(tweet) <= 280
 
 
@@ -126,11 +124,47 @@ def test_main_uses_fallback_when_scheduler_skips(monkeypatch):
     assert len(enqueue_calls) == 1
     filings = enqueue_calls[0][0]
     assert len(filings) == 1
-    assert filings[0]["signalType"] == "FALLBACK_SUMMARY"
+    assert filings[0]["signalType"] == "ALERT"
+    assert filings[0]["thread"][0]["text"].startswith("🚨 BREAKING: Congress member Byron Donalds")
     assert enqueue_calls[0][2] is True
 
 
-def test_main_skips_fallback_when_scheduler_already_posted(monkeypatch):
+def test_fallback_queues_different_members_separately(monkeypatch):
+    trades = [
+        _trade_for_today(),
+        {
+            **_trade_for_today(),
+            "firstName": "Dave",
+            "lastName": "McCormick",
+            "symbol": "GS",
+            "type": "Purchase",
+            "amount": "$250,001 - $500,000",
+        },
+    ]
+    enqueue_calls = []
+
+    monkeypatch.setattr(main_module, "has_been_posted", lambda *_args: False)
+    monkeypatch.setattr(
+        main_module,
+        "enqueue_signal_threads",
+        lambda filings, now_et, force_due_now=False: enqueue_calls.append(filings) or len(filings),
+    )
+    monkeypatch.setattr(main_module, "dispatch_due_threads", lambda _now: {"posted": 1})
+
+    result = main_module._maybe_post_fallback_summary(
+        trades,
+        datetime.now(ET),
+        {"posted": True, "posted_count": 1, "reason": "posted"},
+    )
+
+    assert result["queued_count"] == 2
+    assert len(enqueue_calls[0]) == 2
+    roots = [unit["thread"][0]["text"] for unit in enqueue_calls[0]]
+    assert any("Congress member Byron Donalds" in root for root in roots)
+    assert any("Congress member Dave McCormick" in root for root in roots)
+
+
+def test_main_still_queues_member_alerts_when_scheduler_posts(monkeypatch):
     trade = _trade_for_today()
     enqueue_calls = []
 
@@ -154,7 +188,8 @@ def test_main_skips_fallback_when_scheduler_already_posted(monkeypatch):
 
     main_module.main()
 
-    assert enqueue_calls == []
+    assert len(enqueue_calls) == 1
+    assert enqueue_calls[0][0][0]["signalType"] == "ALERT"
 
 
 def test_main_skips_fallback_when_no_disclosures(monkeypatch):

@@ -27,7 +27,7 @@ Follow: https://x.com/theinsidescope
 1. Fetches latest filings and writes only unseen trades.
 2. Builds same-day highlights and sends an email (once per day).
 3. Runs the scheduler to select and publish due content.
-4. If scheduler is out-of-window or selects nothing, can post a fallback summary thread.
+4. Queues one congressional alert per member disclosure so same-day members are never collapsed together.
 
 Each run logs a concise execution summary to stdout (delta stats, scheduler decision, and publish outcome).
 
@@ -108,8 +108,8 @@ Set environment variables (typically in `.env` locally and as repository secrets
 | `OPENAI_API_KEY` | unset | Enables LLM insight generation for scheduler content. |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | Model used by `insight_generator.py`. |
 | `SCHEDULER_DRY_RUN` | `false` | Select content without posting. |
-| `SCHEDULER_FALLBACK_ENABLED` | `true` | Allow fallback summary posting when scheduler does not post. |
-| `SCHEDULER_FALLBACK_MODE` | `summary` | Fallback mode selector (currently summary mode). |
+| `SCHEDULER_FALLBACK_ENABLED` | `true` | Queue every new congressional disclosure as a member-specific alert. |
+| `SCHEDULER_FALLBACK_MODE` | `summary` | Legacy mode selector. Keep set to `summary` to enable member alert queuing. |
 
 ## Running Locally
 
@@ -185,7 +185,7 @@ events, while persisted per-window guards prevent duplicates. It enforces:
 - anti-spam spacing between root posts,
 - and queue-based retries for transient posting failures.
 
-If no scheduler post occurs for a run, fallback summary posting can be enabled via environment flags.
+New congressional disclosures are queued per member. Multiple trades by the same member stay together in one alert thread, while different members remain separate queue jobs.
 
 ## CI Automation
 

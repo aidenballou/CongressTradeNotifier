@@ -133,16 +133,15 @@ def test_compose_cluster_thread_includes_cashtag_and_chart():
 
 
 def test_compose_csuite_thread_surfaces_role_and_size():
-    trades = [
-        _trade("TSLA", "ELON MUSK", "Officer: Chief Executive Officer", 2_000_000, csuite=True),
-    ]
+    trade = _trade("TSLA", "MUSK ELON", "Officer: Chief Executive Officer", 2_000_000, csuite=True)
+    trade["company_name"] = "Tesla"
+    trades = [trade]
     signal = insider_signals.detect_insider_signals(trades)[0]
     thread = insider_signals.compose_insider_alert_thread(signal)
 
     root_text = thread[0]["text"]
-    assert "CEO" in root_text
-    assert "$TSLA" in root_text
-    assert "$2.0M" in root_text
+    assert root_text == "🚨 BREAKING: Tesla CEO Elon Musk just disclosed a $2.0M stock purchase."
+    assert "open-market purchase" in thread[1]["text"]
 
 
 def test_every_insider_signal_type_composes_valid_social_copy():

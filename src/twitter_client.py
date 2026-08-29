@@ -1077,21 +1077,22 @@ class TwitterClient:
         pad = (ymax - ymin) * 0.08 if ymax > ymin else 1.0
         latest_price = closes[-1]
 
-        entry_price: Optional[float]
-        entry_price = None
-        entry_date_label: Optional[str] = None
+        transaction_dt: Optional[datetime] = None
+        split_index: Optional[int] = None
         if transaction_date:
             try:
-                entry_price, _ = self._get_close_on_or_after(symbol, transaction_date)
-            except Exception:
-                entry_price = None
-            try:
-                entry_date_label = datetime.strptime(transaction_date, "%Y-%m-%d").strftime("%b %d, %Y")
-            except Exception:
-                entry_date_label = None
-        if entry_price is None:
+                transaction_dt = datetime.strptime(transaction_date, "%Y-%m-%d")
+                split_index = next((i for i, date in enumerate(dates) if date >= transaction_dt), None)
+                if split_index is not None and not (dates[0] <= transaction_dt <= dates[-1]):
+                    split_index = None
+            except ValueError:
+                transaction_dt = None
+
+        if split_index is not None:
+            entry_price = closes[split_index]
+            entry_date_label = transaction_dt.strftime("%b %d, %Y")
+        else:
             entry_price = closes[0]
-        if entry_date_label is None:
             entry_date_label = dates[0].strftime("%b %d, %Y")
 
         change_abs = None
@@ -1154,7 +1155,7 @@ class TwitterClient:
 
         reference_text = (
             f"SINCE {entry_date_label.upper()}"
-            if transaction_date
+            if split_index is not None
             else f"FROM {entry_date_label.upper()}"
         )
         summary_ax.text(
@@ -1221,17 +1222,6 @@ class TwitterClient:
         )
 
         # Right chart: muted history transitions to the active post-trade line.
-        transaction_dt: Optional[datetime] = None
-        split_index: Optional[int] = None
-        if transaction_date:
-            try:
-                transaction_dt = datetime.strptime(transaction_date, "%Y-%m-%d")
-                split_index = next((i for i, date in enumerate(dates) if date >= transaction_dt), None)
-                if split_index is not None and not (dates[0] <= transaction_dt <= dates[-1]):
-                    split_index = None
-            except ValueError:
-                transaction_dt = None
-
         line_style = {
             "linewidth": 2.0,
             "solid_joinstyle": "round",

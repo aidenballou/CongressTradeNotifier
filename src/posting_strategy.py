@@ -99,77 +99,6 @@ def _stable_queue_key(unit: Dict[str, Any]) -> str:
     return f"{disclosure_date}|{signal_type}|{digest[:16]}"
 
 
-def _merge_units_for_day(day: str, units: List[Dict[str, Any]]) -> Dict[str, Any]:
-    all_trades: List[Dict[str, Any]] = []
-    all_symbols: List[str] = []
-    all_members: List[str] = []
-    summaries: List[str] = []
-
-    for unit in units:
-        filing = unit.get("filing") or {}
-        trades = filing.get("trades") if isinstance(filing.get("trades"), list) else [filing]
-        for trade in trades:
-            all_trades.append(trade)
-            symbol = str(trade.get("symbol") or trade.get("ticker") or "").upper().strip()
-            if symbol:
-                all_symbols.append(symbol)
-            member = str(trade.get("member_name") or f"{trade.get('firstName', '')} {trade.get('lastName', '')}").strip()
-            if member:
-                all_members.append(member)
-
-        signal = unit.get("signal") or {}
-        summary = str(signal.get("summarySentence") or "")
-        if summary:
-            summaries.append(summary)
-
-    unique_symbols = sorted(set(all_symbols))
-    unique_members = sorted(set(all_members))
-    lead_symbols = ", ".join(unique_symbols[:3]) if unique_symbols else "multiple names"
-
-    root = (
-        f"Congress just lined up around {lead_symbols}. "
-        f"{len(unique_members)} members placed high-conviction trades in the same filing cycle. "
-        "Could be real positioning, could be headline noise. Front-run or fade?"
-    )
-    tweet2 = (
-        f"Stats check: {len(all_trades)} trades across {len(unique_symbols)} tickers. "
-        f"Signal overlap: {len(units)} HIGH alerts collapsed into one narrative thread."
-    )
-    historical_hint = summaries[0] if summaries else "Recent analogs were mixed, so confidence should stay probabilistic."
-    tweet3 = f"Historical lens: {historical_hint} Treat this as context, not certainty."
-
-    thread = [
-        {"text": root[:280], "media_symbol": None, "media_trade_date": None},
-        {"text": tweet2[:280], "media_symbol": unique_symbols[0] if unique_symbols else None, "media_trade_date": None},
-        {"text": tweet3[:280], "media_symbol": None, "media_trade_date": None},
-    ]
-
-    return {
-        "disclosureDate": day,
-        "signalType": "CLUSTER",
-        "thread": thread,
-        "filing": {
-            "disclosureDate": day,
-            "trades": all_trades,
-        },
-    }
-
-
-def _apply_same_day_merge(units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for unit in units:
-        day = str(unit.get("disclosureDate") or unit.get("filing", {}).get("disclosureDate") or "")
-        grouped.setdefault(day, []).append(unit)
-
-    merged: List[Dict[str, Any]] = []
-    for day, group in grouped.items():
-        if day and len(group) > 1:
-            merged.append(_merge_units_for_day(day, group))
-        else:
-            merged.extend(group)
-    return merged
-
-
 def enqueue_signal_threads(
     filings: List[Dict[str, Any]],
     now_et: datetime,
@@ -182,9 +111,7 @@ def enqueue_signal_threads(
         return 0
 
     queued = 0
-    units = _apply_same_day_merge(filings)
-
-    for unit in units:
+    for unit in filings:
         thread = unit.get("thread") or []
         if not thread:
             continue
@@ -396,5 +323,4 @@ def dispatch_due_threads(now_et: datetime, *, skip_anti_spam: bool = False) -> D
         summary["engagement_sample_error"] = str(e)[:200]
 
     return summary
-
 

@@ -339,6 +339,48 @@ class TestTwitterClient:
             if image_path:
                 os.unlink(image_path)
 
+    @patch.dict('os.environ', {
+        'TWITTER_API_KEY': 'test_key',
+        'TWITTER_API_SECRET': 'test_secret',
+        'TWITTER_ACCESS_TOKEN': 'test_token',
+        'TWITTER_ACCESS_SECRET': 'test_token_secret'
+    })
+    @patch('src.twitter_client.tweepy.Client')
+    def test_build_chart_calculates_performance_from_trade_marker(self, mock_client):
+        """Use the plotted trade-date close for the chart's performance summary."""
+        import os
+        from datetime import datetime
+        from matplotlib.axes import Axes
+
+        client = TwitterClient()
+        series = [
+            (datetime(2026, 6, 1), 90.0),
+            (datetime(2026, 8, 18), 100.0),
+            (datetime(2026, 8, 27), 110.0),
+        ]
+        rendered_text = []
+        original_text = Axes.text
+        image_path = None
+
+        def capture_text(axis, x, y, text, *args, **kwargs):
+            rendered_text.append(text)
+            return original_text(axis, x, y, text, *args, **kwargs)
+
+        with patch.object(client, '_fetch_historical_prices', return_value=series), patch.object(
+            client,
+            '_get_close_on_or_after',
+            side_effect=AssertionError('chart should use its plotted price series'),
+        ), patch.object(Axes, 'text', new=capture_text):
+            image_path = client._build_chart_for_symbol('GS', '2026-08-18')
+
+        try:
+            assert '+10.0%' in rendered_text
+            assert '+$10.00' in rendered_text
+            assert 'SINCE AUG 18, 2026' in rendered_text
+        finally:
+            if image_path:
+                os.unlink(image_path)
+
     @patch('src.twitter_client.TwitterClient')
     def test_post_trades_to_twitter_aggregates(self, mock_client_cls):
         """Ensure trades are aggregated by member before tweeting."""

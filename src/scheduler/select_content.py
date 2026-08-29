@@ -22,9 +22,7 @@ try:
         has_insider_alert_recent,
     )
     from trade_analyzer import analyze_filing
-    from historical_context import build_historical_context
-    from insight_generator import generate_insight
-    from tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread, validate_social_copy
+    from tweet_composer import compose_congress_alert_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread, validate_social_copy
     from insider_signals import find_top_insider_signal, compose_insider_alert_thread
     from posting_strategy import enqueue_signal_threads, dispatch_due_threads
 except ImportError:  # pragma: no cover
@@ -42,9 +40,7 @@ except ImportError:  # pragma: no cover
         has_insider_alert_recent,
     )
     from src.trade_analyzer import analyze_filing
-    from src.historical_context import build_historical_context
-    from src.insight_generator import generate_insight
-    from src.tweet_composer import compose_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread, validate_social_copy
+    from src.tweet_composer import compose_congress_alert_thread, compose_daily_tape_thread, compose_seven_day_theme_thread, compose_member_spotlight_thread, validate_social_copy
     from src.insider_signals import find_top_insider_signal, compose_insider_alert_thread
     from src.posting_strategy import enqueue_signal_threads, dispatch_due_threads
 
@@ -322,10 +318,7 @@ def _compose_for_decision(
                     break
         if bundle is None or signal is None:
             return None
-        context = build_historical_context(bundle, signal, window_days=30)
-        insight = generate_insight(bundle, signal, context)
-        stats = signal.get("diagnostics", {})
-        return compose_thread(bundle, signal, insight, context, stats)
+        return compose_congress_alert_thread(bundle)
     
     elif decision.content_type == "DAILY_TAPE":
         tape = build_daily_tape(now_et)

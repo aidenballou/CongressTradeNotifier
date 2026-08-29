@@ -1,20 +1,20 @@
-import hashlib
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
+from analytics.bundle_builder import bundle_id as congress_bundle_id
 from emailer import send_summary
-from filing_utils import filter_postable_trades, member_name, normalize_action
+from filing_utils import filter_postable_trades, member_name
 from insider import find_recent_insider_activity
 from insights import build_highlights_text, compute_trade_insights
 from notifier import run_delta
 from posting_strategy import dispatch_due_threads, enqueue_signal_threads
 from scheduler.dedupe_guard import has_been_posted, has_email_sent_today, record_email_sent
 from scheduler.select_content import run_scheduler
+from tweet_composer import compose_congress_alert_thread
 
 # Load environment variables
 load_dotenv()
@@ -44,169 +44,38 @@ def _env_enabled(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _truncate(text: str, limit: int = 280) -> str:
-    compact = "\n".join(" ".join(line.split()) for line in text.splitlines() if line.strip())
-    if len(compact) <= limit:
-        return compact
-    return compact[: limit - 1].rstrip() + "…"
+def _group_congress_trades(trades: list[dict]) -> list[dict]:
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for trade in filter_postable_trades(trades):
+        key = (
+            (member_name(trade) or "Unknown").casefold(),
+            str(trade.get("disclosureDate") or trade.get("disclosure_date") or ""),
+        )
+        grouped.setdefault(key, []).append(trade)
 
-
-def _human_amount(value: float) -> str:
-    if value >= 1_000_000:
-        scaled = value / 1_000_000
-        return f"${scaled:.1f}M".replace(".0M", "M")
-    if value >= 1_000:
-        scaled = value / 1_000
-        return f"${scaled:.1f}K".replace(".0K", "K")
-    return f"${value:,.0f}"
-
-
-def _amount_bounds(trade: dict) -> tuple[float, float] | None:
-    raw = str(trade.get("amount") or trade.get("amount_range") or "")
-    values = [float(value.replace(",", "")) for value in re.findall(r"[\d,]+(?:\.\d+)?", raw)]
-    if values:
-        return min(values), max(values)
-    try:
-        value = float(trade.get("amount_value") or 0)
-    except (TypeError, ValueError):
-        return None
-    return (value, value) if value > 0 else None
-
-
-def _format_amount_range(trade: dict) -> str:
-    bounds = _amount_bounds(trade)
-    if not bounds:
-        return "amount undisclosed"
-    low, high = bounds
-    if low == high:
-        return _human_amount(high)
-    return f"{_human_amount(low)}–{_human_amount(high)}"
-
-
-def _member_label(trade: dict) -> str:
-    name = member_name(trade) or "A member of Congress"
-    source = str(trade.get("source") or "").lower()
-    if source == "house":
-        return f"Rep. {name}"
-    if source == "senate":
-        return f"Sen. {name}"
-    return name
-
-
-def _parse_trade_date(value: object) -> datetime | None:
-    try:
-        return datetime.strptime(str(value), "%Y-%m-%d")
-    except (TypeError, ValueError):
-        return None
-
-
-def _timing_line(trades: list[dict]) -> str:
-    transaction_dates = [
-        parsed for trade in trades if (parsed := _parse_trade_date(trade.get("transactionDate")))
-    ]
-    lags = []
-    for trade in trades:
-        transaction_date = _parse_trade_date(trade.get("transactionDate"))
-        disclosure_date = _parse_trade_date(trade.get("disclosureDate"))
-        if transaction_date and disclosure_date:
-            lags.append(max((disclosure_date - transaction_date).days, 0))
-    if not transaction_dates or not lags:
-        return ""
-
-    earliest = min(transaction_dates)
-    latest = max(transaction_dates)
-    date_text = earliest.strftime("%b %d").replace(" 0", " ")
-    if latest != earliest:
-        latest_text = latest.strftime("%b %d").replace(" 0", " ")
-        date_text = f"{date_text}–{latest_text}"
-
-    lag_text = str(min(lags))
-    if max(lags) != min(lags):
-        lag_text = f"{min(lags)}–{max(lags)}"
-    trade_word = "Trade" if len(trades) == 1 else "Trades"
-    return f"{trade_word} made {date_text}; filed {lag_text} day{'s' if lag_text != '1' else ''} later."
+    filings = []
+    for (_, disclosure_date), member_trades in grouped.items():
+        name = member_name(member_trades[0]) or "Unknown"
+        first = str(member_trades[0].get("firstName") or "").strip()
+        last = str(member_trades[0].get("lastName") or "").strip()
+        filings.append(
+            {
+                "firstName": first,
+                "lastName": last,
+                "member_name": name,
+                "disclosureDate": disclosure_date,
+                "trades": member_trades,
+            }
+        )
+    return filings
 
 
 def _format_fallback_root(trades_today: list[dict], today: str) -> str:
-    trades = filter_postable_trades(trades_today)
-    if not trades:
+    filings = _group_congress_trades(trades_today)
+    if not filings:
         return ""
-
-    trades.sort(
-        key=lambda trade: (
-            -((_amount_bounds(trade) or (0, 0))[1]),
-            str(trade.get("symbol") or ""),
-        )
-    )
-    members = list(dict.fromkeys(_member_label(trade) for trade in trades))
-    actions = [normalize_action(str(trade.get("type") or trade.get("transaction_type") or "")) for trade in trades]
-
-    if len(trades) == 1:
-        trade = trades[0]
-        action = "purchase" if actions[0] == "BUY" else "sale"
-        ticker = str(trade.get("symbol") or trade.get("ticker") or "").replace("$", "").upper()
-        lines = [
-            f"{members[0]} disclosed a stock {action}: ${ticker} — {_format_amount_range(trade)}."
-        ]
-    elif len(trades) <= 3 and len(members) == 1:
-        if len(set(actions)) == 1:
-            action = "purchases" if actions[0] == "BUY" else "sales"
-            lines = [f"{members[0]} disclosed {len(trades)} stock {action}:"]
-        else:
-            lines = [f"{members[0]} disclosed {len(trades)} stock trades:"]
-        for index, trade in enumerate(trades):
-            ticker = str(trade.get("symbol") or trade.get("ticker") or "").replace("$", "").upper()
-            ticker = f"${ticker}" if index == 0 else ticker
-            action_prefix = ""
-            if len(set(actions)) > 1:
-                action_prefix = "Bought " if actions[index] == "BUY" else "Sold "
-            lines.append(f"• {action_prefix}{ticker} — {_format_amount_range(trade)}")
-    else:
-        buys = actions.count("BUY")
-        sales = actions.count("SELL")
-        largest = trades[0]
-        largest_ticker = str(largest.get("symbol") or largest.get("ticker") or "").replace("$", "").upper()
-        actor = members[0] if len(members) == 1 else f"{len(members)} members of Congress"
-        lines = [
-            f"{actor} disclosed {len(trades)} stock trades: {buys} buys, {sales} sales.",
-            f"Largest: {'bought' if actions[0] == 'BUY' else 'sold'} ${largest_ticker} — {_format_amount_range(largest)}.",
-        ]
-
-    bounds = [_amount_bounds(trade) for trade in trades]
-    known_bounds = [bound for bound in bounds if bound]
-    if len(trades) > 1 and known_bounds:
-        total_low = sum(bound[0] for bound in known_bounds)
-        total_high = sum(bound[1] for bound in known_bounds)
-        lines.append(f"Combined disclosed range: {_human_amount(total_low)}–{_human_amount(total_high)}.")
-
-    timing = _timing_line(trades)
-    if timing:
-        lines.append(timing)
-
-    suffix = "#CongressTrades"
-    return f"{_truncate(chr(10).join(lines), 280 - len(suffix) - 1)}\n{suffix}"
-
-
-def _fallback_bundle_id(trades_today: list[dict], today: str) -> str:
-    parts = []
-    for trade in trades_today:
-        parts.append(
-            "|".join(
-                [
-                    today,
-                    str(trade.get("firstName", "")),
-                    str(trade.get("lastName", "")),
-                    str(trade.get("symbol", "")),
-                    str(trade.get("type", "")),
-                    str(trade.get("amount", "")),
-                    str(trade.get("transactionDate", "")),
-                    str(trade.get("disclosureDate", "")),
-                    str(trade.get("link", "")),
-                ]
-            )
-        )
-    digest = hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
-    return f"fallback-{today}-{digest}"
+    thread = compose_congress_alert_thread(filings[0])
+    return str(thread[0]["text"]) if thread else ""
 
 
 def _maybe_post_fallback_summary(
@@ -230,6 +99,7 @@ def _maybe_post_fallback_summary(
         "reason": "disabled" if not fallback_enabled else "not_eligible",
         "posted_count": 0,
         "failed_count": 0,
+        "queued_count": 0,
     }
 
     if not fallback_enabled:
@@ -240,44 +110,36 @@ def _maybe_post_fallback_summary(
     if not trades_today:
         result["reason"] = "no_disclosures"
         return result
-    if bool(scheduler_outcome.get("posted")):
-        result["reason"] = "scheduler_already_posted"
-        return result
-    if int(scheduler_outcome.get("posted_count", 0)) > 0:
-        result["reason"] = "already_posted_this_run"
-        return result
-    if scheduler_reason not in fallback_eligible_reasons:
+    if scheduler_reason not in fallback_eligible_reasons and not bool(scheduler_outcome.get("posted")):
         result["reason"] = f"ineligible_reason:{scheduler_reason}"
         return result
 
     today = now_et.strftime("%Y-%m-%d")
-    bundle_id = _fallback_bundle_id(trades_today, today)
-    if has_been_posted("FALLBACK_SUMMARY", bundle_id, today, "FALLBACK"):
-        result["reason"] = "already_posted"
-        return result
+    queue_units = []
+    for filing in _group_congress_trades(trades_today):
+        bundle_id = congress_bundle_id(filing)
+        if has_been_posted("ALERT", bundle_id, today, "FALLBACK"):
+            continue
+        thread = compose_congress_alert_thread(filing)
+        if not thread:
+            continue
+        queue_units.append(
+            {
+                "disclosureDate": filing["disclosureDate"] or today,
+                "signalType": "ALERT",
+                "thread": thread,
+                "filing": filing,
+                "signal": {"summarySentence": "member_trade_alert"},
+                "context": {"window": "FALLBACK", "bundle_id": bundle_id},
+            }
+        )
 
-    tweet_text = _format_fallback_root(trades_today, today)
-    if not tweet_text:
+    if not queue_units:
         result["reason"] = "no_postable_disclosures"
         return result
 
     result["attempted"] = True
-    thread = [
-        {
-            "text": tweet_text,
-            "media_symbol": None,
-            "media_trade_date": None,
-        }
-    ]
-    queue_unit = {
-        "disclosureDate": today,
-        "signalType": "FALLBACK_SUMMARY",
-        "thread": thread,
-        "filing": {"disclosureDate": today, "trades": trades_today},
-        "signal": {"summarySentence": "fallback_summary"},
-        "context": {"window": "FALLBACK", "bundle_id": bundle_id},
-    }
-    enqueue_signal_threads([queue_unit], now_et, force_due_now=True)
+    result["queued_count"] = enqueue_signal_threads(queue_units, now_et, force_due_now=True)
     dispatch_summary = dispatch_due_threads(now_et)
     posted_now = int(dispatch_summary.get("posted", 0))
     failed_now = int(dispatch_summary.get("failed", 0))

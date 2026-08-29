@@ -117,7 +117,7 @@ def test_enqueue_signal_threads_dedupe_repeated_call(monkeypatch):
     assert posting_strategy.cursor.fetchone()[0] == 1
 
 
-def test_enqueue_signal_threads_merges_same_day(monkeypatch):
+def test_enqueue_signal_threads_keeps_same_day_members_separate(monkeypatch):
     _setup_db(monkeypatch)
 
     now_et = datetime(2026, 2, 11, 8, 0, tzinfo=ET)
@@ -126,17 +126,16 @@ def test_enqueue_signal_threads_merges_same_day(monkeypatch):
         now_et,
     )
 
-    assert count == 1
+    assert count == 2
 
-    posting_strategy.cursor.execute("SELECT scheduled_for, payload_json FROM tweet_queue")
-    row = posting_strategy.cursor.fetchone()
-    assert row is not None
+    posting_strategy.cursor.execute("SELECT scheduled_for, payload_json FROM tweet_queue ORDER BY id")
+    rows = posting_strategy.cursor.fetchall()
+    assert len(rows) == 2
 
-    scheduled_for = datetime.fromisoformat(row[0]).astimezone(ET)
-    assert scheduled_for.hour == 9 and scheduled_for.minute == 35
+    assert all(datetime.fromisoformat(row[0]).astimezone(ET).strftime("%H:%M") == "09:35" for row in rows)
 
-    payload = json.loads(row[1])
-    assert len(payload["thread"]) == 3
+    roots = [json.loads(row[1])["thread"][0]["text"] for row in rows]
+    assert roots == ["A", "B"]
 
 
 def test_enqueue_signal_threads_force_due_now_bypasses_time_guards(monkeypatch):

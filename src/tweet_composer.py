@@ -8,23 +8,19 @@ from typing import Any, Dict, List, Optional
 
 try:
     from filing_utils import (
-        action_verb,
         extract_trades as _extract_trades,
         filter_postable_trades,
         is_postable_congress_trade,
         member_name as _member_name,
         normalize_action,
-        stable_mode as _stable_mode,
     )
 except ImportError:  # pragma: no cover
     from src.filing_utils import (
-        action_verb,
         extract_trades as _extract_trades,
         filter_postable_trades,
         is_postable_congress_trade,
         member_name as _member_name,
         normalize_action,
-        stable_mode as _stable_mode,
     )
 
 
@@ -56,38 +52,17 @@ def _parse_date(value: Any) -> Optional[datetime]:
     if not value:
         return None
     raw = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
+    candidates = (
+        (raw[:10], "%Y-%m-%d"),
+        (raw[:10], "%m/%d/%Y"),
+        (raw[:19], "%Y-%m-%dT%H:%M:%S"),
+    )
+    for candidate, fmt in candidates:
         try:
-            return datetime.strptime(raw[: len(fmt)], fmt)
+            return datetime.strptime(candidate, fmt)
         except ValueError:
             continue
     return None
-
-
-def _format_date(value: Any) -> str:
-    parsed = _parse_date(value)
-    if parsed:
-        return parsed.strftime("%b %-d, %Y")
-    return str(value or "").strip()
-
-
-def _days_between(start: Any, end: Any) -> Optional[int]:
-    start_date = _parse_date(start)
-    end_date = _parse_date(end)
-    if not start_date or not end_date:
-        return None
-    return max((end_date - start_date).days, 0)
-
-
-def _filed_delay_phrase(trade_date: Any, disclosure_date: Any) -> str:
-    days = _days_between(trade_date, disclosure_date)
-    if days is None:
-        return ""
-    if days == 0:
-        return "Filed the same day."
-    if days == 1:
-        return "Filed 1 day later."
-    return f"Filed {days} days later."
 
 
 def _ticker_text(ticker: Any) -> str:
@@ -102,60 +77,14 @@ def _trade_amount_text(trade: Dict[str, Any]) -> str:
     except (TypeError, ValueError):
         numeric_value = 0.0
     if numeric_value > 0:
-        return _format_amount(numeric_value)
+        return f"about {_format_amount(numeric_value)}"
     raw = str(trade.get("amount") or trade.get("amount_range") or "").strip()
-    return raw if raw.startswith("$") else raw
-
-
-def _action_label(action: Any) -> str:
-    normalized = normalize_action(str(action or ""))
-    if normalized == "BUY":
-        return "BUY"
-    if normalized == "SELL":
-        return "SELL"
-    return "TRADE"
-
-
-def _action_past(action: Any) -> str:
-    return action_verb(str(action or ""))
-
-
-def _clean_hook(hook: str) -> str:
-    value = " ".join((hook or "").split())
-    if not value:
-        return ""
-    lowered = value.lower()
-    if any(claim in lowered for claim in VAGUE_CLAIMS):
-        return ""
-    if len(value) > 120:
-        return ""
-    return value.rstrip(".")
-
-
-def _reason_it_matters(
-    trade: Dict[str, Any],
-    signal: Optional[Dict[str, Any]] = None,
-    insight: Optional[Dict[str, Any]] = None,
-    context: Optional[Dict[str, Any]] = None,
-) -> str:
-    days = _days_between(
-        trade.get("transactionDate") or trade.get("transaction_date"),
-        trade.get("disclosureDate") or trade.get("disclosure_date"),
-    )
-    if days is not None and days >= 30:
-        return "late filing"
-
-    signal_type = str((signal or {}).get("signalType") or "").replace("_", " ").strip().lower()
-    if signal_type and signal_type != "other":
-        return f"{signal_type} signal"
-
-    hook = _clean_hook(str((insight or {}).get("hook") or ""))
-    if hook:
-        return hook
-
-    if str((context or {}).get("combinedSummary") or "").strip():
-        return "historical comparison available"
-    return "largest trade in the batch"
+    numbers = [float(value.replace(",", "")) for value in re.findall(r"[\d,]+(?:\.\d+)?", raw)]
+    if not numbers:
+        return raw
+    if len(numbers) == 1:
+        return _format_amount(numbers[0])
+    return f"{_format_amount(min(numbers))}-{_format_amount(max(numbers))}"
 
 
 def validate_social_copy(
@@ -188,37 +117,6 @@ def validate_social_copy(
     return True
 
 
-def _quality_check_tweet1(text: str) -> str:
-    """Lightweight checks: trim to limit, reduce obvious repetition."""
-    out = " ".join((text or "").split())
-    if len(out) > MAX_TWEET_LEN:
-        out = out[: MAX_TWEET_LEN - 1].rstrip() + "…"
-    # Avoid duplicate phrase (e.g. "Flow recap: ... Flow recap:")
-    if "Flow recap:" in out and out.count("Flow recap:") > 1:
-        out = out.replace("Flow recap:", "", 1).strip()
-        if out.startswith("Flow recap:"):
-            out = out[len("Flow recap:") :].strip()
-    if "Setup:" in out and out.count("Setup:") > 1:
-        out = out.replace("Setup:", "", 1).strip()
-        if out.startswith("Setup:"):
-            out = out[len("Setup:") :].strip()
-    return _trim(out)
-
-
-def _trade_blurb(trades: List[Dict[str, Any]]) -> str:
-    segments = []
-    for trade in trades[:4]:
-        symbol = str(trade.get("symbol") or trade.get("ticker") or "").upper()
-        action = action_verb(str(trade.get("type") or trade.get("transaction_type") or ""))
-        if symbol:
-            segments.append(f"{action} {symbol}")
-    if not segments:
-        return "made a notable move"
-    if len(segments) == 1:
-        return segments[0]
-    return ", ".join(segments[:-1]) + f", and {segments[-1]}"
-
-
 def _pick_symbol(trades: List[Dict[str, Any]]) -> str:
     for trade in trades:
         symbol = str(trade.get("symbol") or trade.get("ticker") or "").upper().strip()
@@ -236,6 +134,109 @@ def _format_amount(value: float) -> str:
     return f"${value:.0f}"
 
 
+def _congress_timing_text(trades: List[Dict[str, Any]], disclosure_date: Any = None) -> str:
+    dated_trades = []
+    for trade in trades:
+        trade_date = _parse_date(trade.get("transactionDate") or trade.get("transaction_date"))
+        filed_date = _parse_date(
+            trade.get("disclosureDate")
+            or trade.get("disclosure_date")
+            or disclosure_date
+        )
+        if trade_date and filed_date:
+            dated_trades.append((trade_date, max((filed_date - trade_date).days, 0)))
+    if not dated_trades:
+        return ""
+
+    if len(dated_trades) == 1:
+        trade_date, lag = dated_trades[0]
+        lag_text = "the same day" if lag == 0 else f"{lag} day{'s' if lag != 1 else ''} later"
+        return f"Trade date: {trade_date.strftime('%b %-d, %Y')}. Filed {lag_text}."
+
+    dates = [item[0] for item in dated_trades]
+    lags = [item[1] for item in dated_trades]
+    date_text = min(dates).strftime("%b %-d")
+    if max(dates) != min(dates):
+        date_text = f"{date_text}-{max(dates).strftime('%b %-d')}"
+    lag_text = str(min(lags))
+    if max(lags) != min(lags):
+        lag_text = f"{min(lags)}-{max(lags)}"
+    return f"Disclosure timing: Trades made {date_text}; filed {lag_text} day{'s' if lag_text != '1' else ''} later."
+
+
+def _congress_alert_pages(trades: List[Dict[str, Any]]) -> List[str]:
+    """Format one member's disclosure as one or more complete alert posts."""
+
+    trades = filter_postable_trades(trades)
+    if not trades:
+        return []
+
+    member = _member_name(trades[0]) or "Unknown"
+    if len(trades) == 1:
+        trade = trades[0]
+        action = normalize_action(str(trade.get("type") or trade.get("transaction_type") or ""))
+        verb = "buying" if action == "BUY" else "selling"
+        ticker = _ticker_text(trade.get("symbol") or trade.get("ticker"))
+        amount = _trade_amount_text(trade)
+        return [
+            f"🚨 BREAKING: Congress member {member} just disclosed {verb} {amount} of {ticker}."
+        ]
+
+    trade_lines = []
+    for trade in trades:
+        action = normalize_action(str(trade.get("type") or trade.get("transaction_type") or ""))
+        verb = "Bought" if action == "BUY" else "Sold"
+        ticker = str(trade.get("symbol") or trade.get("ticker") or "").replace("$", "").upper().strip()
+        trade_lines.append((verb, _trade_amount_text(trade), ticker))
+
+    pages: List[str] = []
+    remaining = list(trade_lines)
+    while remaining:
+        header = (
+            f"🚨 BREAKING: Congress member {member} just disclosed {len(trades)} trades:"
+            if not pages
+            else f"More trades from Congress member {member}:"
+        )
+        lines = [header]
+        included = 0
+        for verb, amount, ticker in remaining:
+            ticker_text = f"${ticker}" if included == 0 else ticker
+            line = f"• {verb} {amount} of {ticker_text}"
+            if len("\n".join(lines + [line])) > MAX_TWEET_LEN:
+                break
+            lines.append(line)
+            included += 1
+        if included == 0:
+            return []
+        pages.append("\n".join(lines))
+        remaining = remaining[included:]
+    return pages
+
+
+def compose_congress_alert_thread(filing: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build a factual member-specific alert and keep the chart on its root."""
+
+    trades = filter_postable_trades(_extract_trades(filing))
+    pages = _congress_alert_pages(trades)
+    if not pages:
+        return []
+
+    symbol = _pick_symbol(trades)
+    media_date = str(trades[0].get("transactionDate") or trades[0].get("transaction_date") or "")
+    thread = [
+        {
+            "text": text,
+            "media_symbol": symbol if index == 0 else None,
+            "media_trade_date": media_date if index == 0 else None,
+        }
+        for index, text in enumerate(pages)
+    ]
+    timing = _congress_timing_text(trades, filing.get("disclosureDate"))
+    if timing and len(thread) == 1:
+        thread.append({"text": timing, "media_symbol": None, "media_trade_date": None})
+    return thread
+
+
 def compose_thread(
     filing: Dict[str, Any],
     signal: Dict[str, Any],
@@ -243,79 +244,13 @@ def compose_thread(
     context: Dict[str, Any],
     stats: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Build a 2-tweet thread: hook+action (tweet 1), context+question (tweet 2)."""
+    """Build the member-specific congressional alert selected by the scheduler."""
 
-    trades = filter_postable_trades(_extract_trades(filing))
-    if not trades:
-        return []
-    member = _member_name(trades[0]) if trades else "A member"
-    symbol = _pick_symbol(trades)
-    primary_trade = trades[0] if trades else {}
-    amount = _trade_amount_text(primary_trade)
-    action = _action_label(primary_trade.get("type") or primary_trade.get("transaction_type"))
-    trade_date = primary_trade.get("transactionDate") or primary_trade.get("transaction_date")
-    disclosure_date = filing.get("disclosureDate") or primary_trade.get("disclosureDate") or primary_trade.get("disclosure_date")
-    primary_trade = {**primary_trade, "disclosureDate": disclosure_date}
-
-    interpretation = str(insight.get("interpretation") or "")
-    question = str(insight.get("question") or "")
-    last_outcome = str(context.get("lastTradeOutcome") or "").strip()
-
-    signal_type = str(signal.get("signalType") or "OTHER")
-    score = stats.get("score") or signal.get("diagnostics", {}).get("score") or "-"
-
-    seed = f"{member}|{symbol}|{signal_type}|{filing.get('disclosureDate', '')}"
-    mode = _stable_mode(seed)
-
-    # Tweet 1: concrete filing facts first, with interpretation only after the required facts.
-    symbol_text = _ticker_text(symbol)
-    amount_clause = f" worth about {amount}" if amount else ""
-    trade_date_clause = f" Trade date: {_format_date(trade_date)}." if trade_date else ""
-    filed_clause = f" {_filed_delay_phrase(trade_date, disclosure_date)}" if trade_date and disclosure_date else ""
-    reason = _reason_it_matters(primary_trade, signal=signal, insight=insight, context=context)
-    tweet1 = (
-        f"{member} reported a {action} in {symbol_text}{amount_clause}."
-        f"{trade_date_clause}{filed_clause} Why it matters: {reason}."
-    )
-
-    if last_outcome and len(tweet1) + len(last_outcome) + 2 <= MAX_TWEET_LEN:
-        tweet1 = f"{tweet1} {last_outcome}"
-
-    tweet1 = _quality_check_tweet1(tweet1)
-    if not validate_social_copy(tweet1, ticker_data_exists=bool(symbol), amount_data_exists=bool(amount)):
-        tweet1 = _trim(f"{member} reported a {action} in {symbol_text}{amount_clause}. Why it matters: {reason}.")
-
-    # Tweet 2: Interpretation + engagement question (the market context)
-    stat_line_options = [
-        f"Signal score {score}/10 with {signal_type.lower()} characteristics.",
-        f"Signal engine tagged this as {signal_type.lower()} with conviction score {score}.",
-        f"Quant check: {signal_type.lower()} setup scored {score}, momentum not guaranteed.",
-    ]
-    stat_line = stat_line_options[mode]
-
-    tweet2_base = f"{interpretation} {question}"
-    tweet2_with_stat = f"{interpretation} {stat_line} {question}"
-    if len(" ".join(tweet2_with_stat.split())) <= MAX_TWEET_LEN:
-        tweet2 = _trim(tweet2_with_stat)
-    else:
-        tweet2 = _trim(tweet2_base)
-
-    media_date = str(trades[0].get("transactionDate") or trades[0].get("transaction_date") or "") if trades else None
-
-    thread = [
-        {
-            "text": tweet1,
-            "media_symbol": symbol or None,
-            "media_trade_date": media_date or None,
-        }
-    ]
-    if interpretation and validate_social_copy(tweet2):
-        thread.append({"text": tweet2, "media_symbol": None, "media_trade_date": None})
-    return thread
+    return compose_congress_alert_thread(filing)
 
 
 def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Compose a strong single-tweet summary of the last 24h activity."""
+    """Turn the daily-tape candidate into an individual member alert."""
 
     total_filings = tape.get("total_filings", 0)
     largest_trade = tape.get("largest_trade")
@@ -326,30 +261,12 @@ def compose_daily_tape_thread(tape: Dict[str, Any]) -> List[Dict[str, Any]]:
         return [{"text": tweet1, "media_symbol": None, "media_trade_date": None}]
 
     if largest_trade and is_postable_congress_trade(largest_trade):
-        ticker = _ticker_text(largest_trade.get("ticker"))
-        member = largest_trade.get("member_name") or "A member"
-        amount = _trade_amount_text(largest_trade)
-        action = _action_label(largest_trade.get("action_normalized") or largest_trade.get("transaction_type"))
-        delay = largest_trade.get("days_to_file")
-        if delay is None:
-            delay = _days_between(largest_trade.get("transaction_date"), largest_trade.get("disclosure_date"))
-        if delay is None:
-            delay_clause = ""
-        elif delay == 1:
-            delay_clause = " Filed 1 day after the trade."
-        else:
-            delay_clause = f" Filed {delay} days after the trade."
-        tweet1 = _trim(
-            f"Today's congressional tape: {total_filings} disclosed trade{'s' if total_filings != 1 else ''}. "
-            f"Most notable: {member} reported a {action} in {ticker}"
-            f"{f' worth about {amount}' if amount else ''}.{delay_clause}"
+        return compose_congress_alert_thread(
+            {
+                "disclosureDate": largest_trade.get("disclosure_date"),
+                "trades": [largest_trade],
+            }
         )
-        if not validate_social_copy(tweet1, ticker_data_exists=bool(ticker), amount_data_exists=bool(amount)):
-            tweet1 = _trim(
-                f"{member} reported a {action} in {ticker}"
-                f"{f' worth about {amount}' if amount else ''}. Why it matters: largest trade in today's batch."
-            )
-        return [{"text": tweet1, "media_symbol": largest_trade.get("ticker") or None, "media_trade_date": largest_trade.get("transaction_date") or None}]
 
     if most_bought and most_bought.get("ticker"):
         ticker = _ticker_text(most_bought["ticker"])
@@ -426,21 +343,18 @@ def compose_member_spotlight_thread(spotlight: Dict[str, Any]) -> List[Dict[str,
     if not spotlight:
         return []
 
-    member = spotlight.get("member", "A member")
-    ticker = spotlight.get("ticker", "")
-    amount_value = spotlight.get("amount_value", 0.0)
-    trans_type = spotlight.get("transaction_type", "")
-    description = spotlight.get("description", "")
-
-    action = _action_label(trans_type)
-    trade_date = spotlight.get("transaction_date")
-    disclosure_date = spotlight.get("disclosure_date")
-    reason = description[:90].strip() if description else "largest trade in the batch"
-    tweet1 = _trim(
-        f"{member} reported a {action} in {_ticker_text(ticker)} "
-        f"worth about {_format_amount(amount_value)}. "
-        f"Trade date: {_format_date(trade_date)}. Filed: {_format_date(disclosure_date)}. "
-        f"Why it matters: {reason}."
+    return compose_congress_alert_thread(
+        {
+            "disclosureDate": spotlight.get("disclosure_date"),
+            "trades": [
+                {
+                    "member_name": spotlight.get("member_name") or spotlight.get("member", "A member"),
+                    "ticker": spotlight.get("ticker", ""),
+                    "amount_value": spotlight.get("amount_value", 0.0),
+                    "transaction_type": spotlight.get("transaction_type", ""),
+                    "transaction_date": spotlight.get("transaction_date"),
+                    "disclosure_date": spotlight.get("disclosure_date"),
+                }
+            ],
+        }
     )
-
-    return [{"text": tweet1, "media_symbol": ticker or None, "media_trade_date": trade_date or None}]
